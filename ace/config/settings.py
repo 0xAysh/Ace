@@ -8,10 +8,8 @@ CACHE_DIR = ACE_DIR / "cache"
 BROWSER_PROFILE_DIR = ACE_DIR / "browser-profile"
 DEBUG_PORT_FILE = ACE_DIR / "debug_port"
 RUN_LOCK_FILE = ACE_DIR / "run.lock"
-CONFIG_FILE = ACE_DIR / "config.toml"
 
-# Look for .env in the project directory OR home dir
-_ENV_FILE = Path(".env") if Path(".env").exists() else Path.home() / ".ace" / ".env"
+_ENV_FILE = Path(".env") if Path(".env").exists() else ACE_DIR / ".env"
 
 
 class Settings(BaseSettings):
@@ -22,11 +20,19 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # Provider selection: groq | deepseek | anthropic
+    provider: str = "groq"
+
+    # API keys (unprefixed so standard env var names work)
+    groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
+    deepseek_api_key: str = Field(default="", alias="DEEPSEEK_API_KEY")
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
-    default_model: str = "claude-haiku-4-5-20251001"
-    fallback_model: str = "claude-sonnet-4-6"
-    confidence_threshold: float = 0.65
-    max_context_chunks: int = 5
+
+    # Per-provider model (can be overridden)
+    groq_model: str = "moonshotai/kimi-k2-instruct"
+    deepseek_model: str = "deepseek-chat"
+    anthropic_model: str = "claude-sonnet-4-5"
+
     debug_port_start: int = 9222
     debug_port_end: int = 9232
 
