@@ -107,7 +107,8 @@ class Orchestrator:
             console.rule("[dim]Starting[/dim]")
 
             llm = _make_llm(settings)
-            console.print(f"[dim]→ Provider: {settings.provider} / {getattr(settings, settings.provider + '_model', '')}[/dim]")
+            active_model = {"groq": settings.groq_model, "deepseek": settings.deepseek_model, "anthropic": settings.anthropic_model}.get(settings.provider, "")
+            console.print(f"[dim]→ Provider: {settings.provider} / {active_model}[/dim]")
 
             task = TASK
             if self.dry_run:
@@ -159,7 +160,7 @@ class Orchestrator:
                 try:
                     await submit_agent.run()
                 finally:
-                    await browser2.close()
+                    await _stop_browser(browser2)
             else:
                 console.print("[dim]Submission cancelled. Submit manually in the browser.[/dim]")
 

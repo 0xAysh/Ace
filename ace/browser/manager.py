@@ -10,8 +10,6 @@ The browser is kept alive between runs so the user doesn't have to re-navigate.
 import asyncio
 import socket
 import subprocess
-import time
-from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -83,13 +81,16 @@ async def _real_url(page: Page) -> str:
         return page.url or ""
 
 
+def _is_usable(url: str) -> bool:
+    return bool(url) and url not in _SKIP_URLS and not any(url.startswith(s) for s in _SKIP_SCHEMES)
+
+
+async def _resolve_urls(pages: list[Page]) -> dict[Page, str]:
+    urls = await asyncio.gather(*(_real_url(p) for p in pages))
+    return dict(zip(pages, urls))
+
+
 async def _pick_page(ctx: BrowserContext, target_url: Optional[str] = None) -> Page:
-    """
-    Select the right tab from the context.
-    - If target_url: navigate page[0] to it.
-    - Else: filter non-blank pages; auto-pick if one, else show picker.
-    After selection, wait for page to be interactive.
-    """
     pages = [p for p in ctx.pages if not p.is_closed()]
     if not pages:
         page = await ctx.new_page()
@@ -101,16 +102,10 @@ async def _pick_page(ctx: BrowserContext, target_url: Optional[str] = None) -> P
         await page.goto(target_url, wait_until="domcontentloaded", timeout=20_000)
         return page
 
-    # Resolve real URLs
-    url_map: dict[Page, str] = {}
-    for p in pages:
-        url_map[p] = await _real_url(p)
-
-    # Filter out blank/internal pages
-    usable = [p for p in pages if url_map[p] and not any(url_map[p].startswith(s) for s in _SKIP_SCHEMES) and url_map[p] not in _SKIP_URLS]
+    url_map = await _resolve_urls(pages)
+    usable = [p for p in pages if _is_usable(url_map[p])]
 
     if not usable:
-        # All pages are blank — user hasn't navigated yet
         console.print(
             "\n[bold green]Browser is open.[/bold green]\n"
             "Navigate to your assignment and click [bold]Take Quiz / Begin Attempt[/bold].\n"
@@ -121,11 +116,9 @@ async def _pick_page(ctx: BrowserContext, target_url: Optional[str] = None) -> P
         except (EOFError, KeyboardInterrupt):
             raise SystemExit(0)
         await asyncio.sleep(0.5)
-        # Re-resolve
         pages = [p for p in ctx.pages if not p.is_closed()]
-        for p in pages:
-            url_map[p] = await _real_url(p)
-        usable = [p for p in pages if url_map[p] and not any(url_map[p].startswith(s) for s in _SKIP_SCHEMES) and url_map[p] not in _SKIP_URLS]
+        url_map = await _resolve_urls(pages)
+        usable = [p for p in pages if _is_usable(url_map[p])]
 
     if not usable:
         console.print(
@@ -139,8 +132,7 @@ async def _pick_page(ctx: BrowserContext, target_url: Optional[str] = None) -> P
         console.print(f"[dim]→ Using tab: {url_map[page][:80]}[/dim]")
         return page
 
-    # Multiple usable tabs — show picker
-    console.print(f"\n[bold]Multiple tabs open — which has your assignment?[/bold]")
+    console.print("\n[bold]Multiple tabs open — which has your assignment?[/bold]")
     for i, p in enumerate(usable, 1):
         try:
             title = await asyncio.wait_for(p.title(), timeout=2.0)

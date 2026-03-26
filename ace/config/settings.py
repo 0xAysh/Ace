@@ -42,7 +42,7 @@ def get_settings() -> Settings:
 
 
 def ensure_dirs() -> None:
-    for d in (ACE_DIR, SESSIONS_DIR, CACHE_DIR, BROWSER_PROFILE_DIR):
+    for d in (ACE_DIR, BROWSER_PROFILE_DIR):
         try:
             d.mkdir(parents=True, exist_ok=True)
         except PermissionError:
