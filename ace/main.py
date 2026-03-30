@@ -25,6 +25,33 @@ def _load_commands() -> None:
     app.add_typer(config_cmd, name="config")
 
 
+@app.command("help")
+def help_cmd() -> None:
+    """Show all commands and options."""
+    console.print("""
+[bold cyan]ace[/bold cyan] — AI assignment agent
+
+[bold]COMMANDS[/bold]
+
+  [bold green]ace run[/bold green]                     Open browser, go to assignment, press Enter
+  [bold green]ace run --dry-run[/bold green]           Fill answers but don't submit
+  [bold green]ace run --url [/bold green][dim]<url>[/dim]          Jump straight to an assignment URL
+
+  [bold green]ace config show[/bold green]             Show current provider, model, API keys
+  [bold green]ace config set provider[/bold green]     [dim]groq | deepseek | anthropic[/dim]
+  [bold green]ace config set groq_api_key[/bold green]      [dim]gsk_...[/dim]   console.groq.com (free)
+  [bold green]ace config set deepseek_api_key[/bold green]  [dim]sk-...[/dim]    platform.deepseek.com
+  [bold green]ace config set anthropic_api_key[/bold green] [dim]sk-ant-...[/dim]
+  [bold green]ace config set groq_model[/bold green]        [dim]qwen/qwen3-32b[/dim]
+  [bold green]ace config set deepseek_model[/bold green]    [dim]deepseek-chat[/dim]
+  [bold green]ace config set anthropic_model[/bold green]   [dim]claude-sonnet-4-5[/dim]
+
+  [bold green]ace debug[/bold green]                   Show what Ace sees in the current browser tab
+
+[bold]CONFIG[/bold] stored in [dim]~/.ace/.env[/dim]
+""")
+
+
 _load_commands()
 
 
