@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
 
     # Per-provider model (can be overridden)
-    groq_model: str = "moonshotai/kimi-k2-instruct"
+    groq_model: str = "qwen/qwen3-32b"
     deepseek_model: str = "deepseek-chat"
     anthropic_model: str = "claude-sonnet-4-5"
 

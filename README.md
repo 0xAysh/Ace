@@ -58,7 +58,7 @@ ace debug                # show what Ace sees in the current browser tab
 |---|---|
 | `provider` | `groq` \| `deepseek` \| `anthropic` |
 | `groq_api_key` | `gsk_...` |
-| `groq_model` | `moonshotai/kimi-k2-instruct` |
+| `groq_model` | `qwen/qwen3-32b` |
 | `deepseek_api_key` | `sk-...` |
 | `deepseek_model` | `deepseek-chat` |
 | `anthropic_api_key` | `sk-ant-...` |
