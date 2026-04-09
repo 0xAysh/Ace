@@ -118,29 +118,30 @@ async def test_scout_passes_screenshot():
 
 @pytest.mark.asyncio
 async def test_select_clicks_mcq_option():
-    page = _make_page()
-    label_mock = AsyncMock()
-    page.locator = MagicMock(return_value=MagicMock(
-        filter=MagicMock(return_value=MagicMock(
-            first=MagicMock(
-                click=AsyncMock(),
-                wait_for=AsyncMock(),
-            )
-        ))
-    ))
+    page, main_frame, player_frame = _make_page_with_frame(player_input_count=2)
 
-    llm = _make_llm()
+    el = MagicMock()
+    el.wait_for = AsyncMock()
+    el.click = AsyncMock()
+
+    filtered_locator = MagicMock()
+    filtered_locator.first = el
+
+    locator = MagicMock()
+    locator.filter = MagicMock(return_value=filtered_locator)
+
+    player_frame.locator = MagicMock(return_value=locator)
+
     questions = [Question(id="q1", text="X?", options=["A. fork", "B. exec"], kind="mcq")]
     plan = AnswerPlan(answers=[Answer(question_id="q1", value="A. fork")])
 
-    loop = QuizLoop(page, llm)
-    # Should not raise
+    loop = QuizLoop(page, MagicMock())
     await loop._select(plan, questions)
-    page.locator.assert_called()
 
-    # Verify that click was actually called on the first successful strategy's locator
-    first_locator = page.locator.return_value.filter.return_value.first
-    first_locator.click.assert_called_once()
+    # Verify the locator strategy was called
+    player_frame.locator.assert_called()
+    el.wait_for.assert_awaited_once()
+    el.click.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -170,17 +171,20 @@ async def test_verify_returns_verify_result():
 
 @pytest.mark.asyncio
 async def test_navigate_next_clicks_button():
-    page = _make_page()
-    btn = AsyncMock()
-    btn.count = AsyncMock(return_value=1)
-    btn.click = AsyncMock()
-    page.get_by_role = MagicMock(return_value=btn)
-    page.wait_for_load_state = AsyncMock()
+    page, main_frame, player_frame = _make_page_with_frame(player_input_count=4)
 
-    llm = _make_llm()
-    loop = QuizLoop(page, llm)
+    btn = MagicMock()
+    btn.count = AsyncMock(return_value=1)
+    btn.first = MagicMock()
+    btn.first.click = AsyncMock()
+
+    player_frame.get_by_role = MagicMock(return_value=btn)
+
+    loop = QuizLoop(page, MagicMock())
     await loop._navigate("next")
-    btn.click.assert_called_once()
+
+    btn.first.click.assert_awaited_once()
+    page.wait_for_load_state.assert_awaited_once_with("networkidle", timeout=5_000)
 
 
 @pytest.mark.asyncio
