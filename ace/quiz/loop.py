@@ -105,8 +105,8 @@ class QuizLoop:
         except Exception:
             pass
 
-        # Strategy 3: radio input whose following label contains the text
-        el = self.page.locator(f'input[type="radio"]').filter(has_text=option_text).first
+        # Strategy 3: list item or option container that wraps the text
+        el = self.page.locator("li, .answer, .option, .choice").filter(has_text=option_text).first
         try:
             await el.wait_for(state="visible", timeout=3_000)
             await el.click()

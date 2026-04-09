@@ -113,3 +113,7 @@ async def test_select_clicks_mcq_option():
     # Should not raise
     await loop._select(plan, questions)
     page.locator.assert_called()
+
+    # Verify that click was actually called on the first successful strategy's locator
+    first_locator = page.locator.return_value.filter.return_value.first
+    first_locator.click.assert_called_once()
