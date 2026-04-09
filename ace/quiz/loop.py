@@ -62,6 +62,8 @@ class QuizLoop:
             # 4. Verify (with retry)
             verify_result = await self._verify()
             retries = 0
+            # Retry re-selects the same answers (click failures, not reasoning errors).
+            # If the answer plan itself is wrong, manual review is needed.
             while not verify_result.all_correct and retries < 2:
                 console.print(
                     f"[yellow]Verify found issues: {verify_result.issues}. Retrying...[/yellow]"
@@ -70,8 +72,10 @@ class QuizLoop:
                 verify_result = await self._verify()
                 retries += 1
 
-            if verify_result.issues:
-                console.print(f"[yellow]Proceeding with issues: {verify_result.issues}[/yellow]")
+            if not verify_result.all_correct:
+                console.print(f"[yellow]Warning: proceeding after retry exhaustion — answers may be wrong: {verify_result.issues}[/yellow]")
+            elif verify_result.issues:
+                console.print(f"[dim]Minor issues noted (proceeding): {verify_result.issues}[/dim]")
 
             # 5. Navigate or stop
             if verify_result.next_action == "done":

@@ -194,3 +194,15 @@ async def test_run_completes_single_question():
     await loop.run()  # should return without error
 
     assert llm.ainvoke.call_count == 3  # scout + answer + verify
+
+
+@pytest.mark.asyncio
+async def test_run_raises_if_no_questions():
+    page = _make_page()
+    llm = _make_llm()
+    empty_scan = PageScan(platform="generic", all_on_page=False, has_check_button=False, questions=[])
+    llm.ainvoke = AsyncMock(return_value=_completion(empty_scan))
+
+    loop = QuizLoop(page, llm)
+    with pytest.raises(RuntimeError, match="No questions found on page"):
+        await loop.run()
