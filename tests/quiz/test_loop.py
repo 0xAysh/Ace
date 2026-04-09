@@ -134,46 +134,51 @@ async def test_select_clicks_mcq_option():
 
 
 @pytest.mark.asyncio
-async def test_verify_returns_verify_result():
-    page = _make_page()
-    llm = _make_llm()
-    vr = VerifyResult(all_correct=True, issues=[], next_action="next")
-    llm.ainvoke = AsyncMock(return_value=_completion(vr))
+async def test_verify_detects_checked_radio():
+    page, main_frame, player_frame = _make_page_with_frame(player_input_count=2)
+    loop = QuizLoop(page, MagicMock())
+    loop._active_frame = AsyncMock(return_value=player_frame)
+    player_frame.evaluate = AsyncMock(return_value={"rc": 1, "cc": 0, "tf": 0})
+    loop._detect_next_action = AsyncMock(return_value="check")
 
-    loop = QuizLoop(page, llm)
     result = await loop._verify()
 
     assert result.all_correct is True
-    assert result.next_action == "next"
-    # Verify must include a screenshot
-    call_args = llm.ainvoke.call_args
-    messages = call_args[0][0]
-    from browser_use.llm.messages import ContentPartImageParam
-    found_image = any(
-        isinstance(part, ContentPartImageParam)
-        for msg in messages
-        if hasattr(msg, 'content') and isinstance(msg.content, list)
-        for part in msg.content
-    )
-    assert found_image
+    assert result.issues == []
+    assert result.next_action == "check"
+
+
+@pytest.mark.asyncio
+async def test_verify_detects_no_selection():
+    page, main_frame, player_frame = _make_page_with_frame(player_input_count=2)
+    loop = QuizLoop(page, MagicMock())
+    loop._active_frame = AsyncMock(return_value=player_frame)
+    player_frame.evaluate = AsyncMock(return_value={"rc": 0, "cc": 0, "tf": 0})
+    loop._detect_next_action = AsyncMock(return_value="check")
+
+    result = await loop._verify()
+
+    assert result.all_correct is False
+    assert len(result.issues) == 1
 
 
 @pytest.mark.asyncio
 async def test_navigate_next_clicks_button():
     page, main_frame, player_frame = _make_page_with_frame(player_input_count=4)
+    loop = QuizLoop(page, MagicMock())
 
     btn = MagicMock()
     btn.count = AsyncMock(return_value=1)
     btn.first = MagicMock()
     btn.first.click = AsyncMock()
 
+    # _click_button_all_frames calls _active_frame then searches frames
+    loop._active_frame = AsyncMock(return_value=player_frame)
     player_frame.get_by_role = MagicMock(return_value=btn)
 
-    loop = QuizLoop(page, MagicMock())
     await loop._navigate("next")
 
     btn.first.click.assert_awaited_once()
-    page.wait_for_load_state.assert_awaited_once_with("networkidle", timeout=5_000)
 
 
 @pytest.mark.asyncio
@@ -182,41 +187,44 @@ async def test_run_completes_single_question():
         player_input_count=2,
         player_body="question text " * 20,
     )
-    # _active_frame is called multiple times; JS click returns True
-    player_frame.evaluate = AsyncMock(side_effect=[2, True, 2, 2])
 
     llm = _make_llm()
     scan = PageScan(
         platform="pearson",
         all_on_page=False,
-        has_check_button=False,
+        has_check_button=True,
         questions=[Question(id="q1", text="What?", options=["A. fork", "B. exec"], kind="mcq")],
     )
+    empty_scan = PageScan(platform="pearson", all_on_page=False, has_check_button=False, questions=[])
     plan = AnswerPlan(answers=[Answer(question_id="q1", value="A. fork")])
-    verify_done = VerifyResult(all_correct=True, issues=[], next_action="done")
 
+    # 1st scout → question, answer, 2nd scout → empty (done)
     llm.ainvoke = AsyncMock(side_effect=[
         _completion(scan),
         _completion(plan),
-        _completion(verify_done),
+        _completion(empty_scan),
     ])
 
     loop = QuizLoop(page, llm)
+    loop._active_frame = AsyncMock(return_value=player_frame)
+    loop._click_option = AsyncMock()
+    loop._verify = AsyncMock(return_value=VerifyResult(all_correct=True, issues=[], next_action="check"))
+    loop._navigate = AsyncMock()
+
     await loop.run()
 
-    assert llm.ainvoke.call_count == 3  # scout + answer + verify
+    assert llm.ainvoke.call_count == 3  # scout + answer + scout(empty)
 
 
 @pytest.mark.asyncio
-async def test_run_raises_if_no_questions():
+async def test_run_completes_if_no_questions():
     page = _make_page()
     llm = _make_llm()
     empty_scan = PageScan(platform="generic", all_on_page=False, has_check_button=False, questions=[])
     llm.ainvoke = AsyncMock(return_value=_completion(empty_scan))
 
     loop = QuizLoop(page, llm)
-    with pytest.raises(RuntimeError, match="No questions found on page"):
-        await loop.run()
+    await loop.run()  # Should return gracefully, not raise
 
 
 @pytest.mark.asyncio

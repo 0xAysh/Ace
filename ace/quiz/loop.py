@@ -1,13 +1,14 @@
 """
 QuizLoop: platform-agnostic quiz solver.
 
-3 LLM calls per page:
+2 LLM calls per page:
   1. scout()  — screenshot + text → PageScan (platform type + questions)
   2. answer() — questions → AnswerPlan (correct answers)
-  3. verify() — screenshot → VerifyResult (selections confirmed + next action)
 
+Verify uses JS DOM inspection (no LLM) — immune to sidebar confusion.
 Playwright handles all clicking.
 """
+import asyncio
 import base64
 import re
 
@@ -23,7 +24,7 @@ from browser_use.llm.messages import (
 )
 
 from ace.quiz.models import Answer, AnswerPlan, PageScan, Question, VerifyResult
-from ace.quiz.prompts import ANSWER_PROMPT, SCOUT_PROMPT, VERIFY_PROMPT
+from ace.quiz.prompts import ANSWER_PROMPT, SCOUT_PROMPT
 
 console = Console()
 
@@ -43,8 +44,8 @@ class QuizLoop:
             # 1. Scout
             scan = await self._scout()
             if not scan.questions:
-                console.print("[bold red]No questions found on page. Stopping.[/bold red]")
-                raise RuntimeError("No questions found on page")
+                console.print("[bold green]→ No more questions found — done.[/bold green]")
+                return
 
             console.print(
                 f"[dim]→ Platform: {scan.platform} | "
@@ -260,41 +261,77 @@ class QuizLoop:
         console.print("[yellow]Warning: could not find text input to fill[/yellow]")
 
     async def _verify(self) -> VerifyResult:
-        b64 = await self._screenshot_b64()
-        text = await self._page_text()
-        messages = [
-            SystemMessage(content=VERIFY_PROMPT),
-            UserMessage(content=[
-                ContentPartTextParam(text=f"Page text:\n{text[:2000]}"),
-                ContentPartImageParam(
-                    image_url=ImageURL(url=f"data:image/png;base64,{b64}", detail="high")
-                ),
-            ]),
-        ]
-        result = await self.llm.ainvoke(messages, output_format=VerifyResult)
-        return result.completion
+        """Verify selections via JS DOM inspection — no LLM, no sidebar confusion."""
+        frame = await self._active_frame()
 
-    async def _navigate(self, action: str) -> None:
-        if action == "check":
-            candidates = ["Check answer", "Check Answer", "Check My Answer", "Check", "Submit Answer"]
-        elif action == "next":
-            candidates = ["Next Question", "Next", "Continue", "Next >"]
-        else:
-            return
+        try:
+            state = await frame.evaluate("""() => {
+                const rc = document.querySelectorAll('input[type="radio"]:checked').length;
+                const cc = document.querySelectorAll('input[type="checkbox"]:checked').length;
+                const tf = [...document.querySelectorAll('input[type="text"], textarea')]
+                            .filter(el => el.value.trim()).length;
+                return { rc, cc, tf };
+            }""")
+        except Exception:
+            state = {"rc": 0, "cc": 0, "tf": 0}
 
+        has_selection = state["rc"] > 0 or state["cc"] > 0 or state["tf"] > 0
+
+        issues: list[str] = []
+        if not has_selection:
+            issues.append("no answer selected in active frame")
+
+        next_action = await self._detect_next_action()
+
+        return VerifyResult(
+            all_correct=has_selection,
+            issues=issues,
+            next_action=next_action,
+        )
+
+    async def _detect_next_action(self) -> str:
+        """Scan all frames for Check/Next/Done buttons (disabled buttons excluded)."""
+        check_kw = ["check answer", "check my answer", "submit answer"]
+        next_kw = ["next question", "next", "continue"]
+
+        for frame in self.page.frames:
+            try:
+                found = await frame.evaluate(
+                    """(cfg) => {
+                        const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
+                        const btns = [...document.querySelectorAll(
+                            'button:not([disabled]), [role="button"]:not([aria-disabled="true"]), input[type="submit"]:not([disabled])'
+                        )];
+                        const texts = btns.map(el => norm(el.textContent || el.value || ''));
+                        return {
+                            check: texts.some(t => cfg.c.some(n => t.includes(n))),
+                            next:  texts.some(t => cfg.n.some(n => t.includes(n))),
+                        };
+                    }""",
+                    {"c": check_kw, "n": next_kw},
+                )
+                if found["check"]:
+                    return "check"
+                if found["next"]:
+                    return "next"
+            except Exception:
+                pass
+
+        return "check"  # Default: assume check button exists (safe fallback)
+
+    async def _click_button_all_frames(self, candidates: list[str]) -> bool:
+        """Try to click a button matching any candidate text, searching all frames."""
         pattern = re.compile(
             '|'.join(re.escape(n) for n in candidates), re.IGNORECASE
         )
 
-        # Search all frames + page top-level (Pearson puts buttons outside the active iframe)
         active_frame = await self._active_frame()
-        frames_to_search = [active_frame]
+        frames = [active_frame]
         for frame in self.page.frames:
-            if frame not in frames_to_search:
-                frames_to_search.append(frame)
+            if frame not in frames:
+                frames.append(frame)
 
-        for frame in frames_to_search:
-            # Playwright role-based search
+        for frame in frames:
             btn = frame.get_by_role("button", name=pattern)
             try:
                 if await btn.count() > 0:
@@ -303,11 +340,10 @@ class QuizLoop:
                         await self.page.wait_for_load_state("networkidle", timeout=5_000)
                     except Exception:
                         pass
-                    return
+                    return True
             except Exception:
                 pass
 
-            # JS fallback — normalized text search
             try:
                 clicked = await frame.evaluate(
                     """(names) => {
@@ -330,8 +366,76 @@ class QuizLoop:
                         await self.page.wait_for_load_state("networkidle", timeout=5_000)
                     except Exception:
                         pass
-                    return
+                    return True
             except Exception:
                 pass
 
-        console.print(f"[yellow]Warning: could not find '{action}' button[/yellow]")
+        return False
+
+    async def _advance_sidebar(self) -> None:
+        """Click the next question in a sidebar question list (Pearson, etc.)."""
+        frame = await self._active_frame()
+        try:
+            advanced = await frame.evaluate("""() => {
+                // Find list containers that look like question lists (items contain "X/Y pt")
+                for (const container of document.querySelectorAll(
+                    'ol, ul, [role="list"], [role="tablist"], nav'
+                )) {
+                    const items = [...container.querySelectorAll(
+                        'li, [role="listitem"], [role="tab"]'
+                    )];
+                    if (items.length < 2) continue;
+                    if (!items.some(i => /\\d+\\/\\d+\\s*pt/.test(i.textContent || ''))) continue;
+
+                    let selectedIdx = -1;
+                    for (let i = 0; i < items.length; i++) {
+                        const cls = (items[i].className || '').toLowerCase();
+                        if (cls.includes('selected') || cls.includes('active') ||
+                            cls.includes('current') ||
+                            items[i].getAttribute('aria-selected') === 'true' ||
+                            /\\bselected\\b/i.test(items[i].textContent || '')) {
+                            selectedIdx = i;
+                            break;
+                        }
+                    }
+
+                    // Click next item after selected
+                    if (selectedIdx >= 0 && selectedIdx + 1 < items.length) {
+                        items[selectedIdx + 1].click();
+                        return true;
+                    }
+                    // No selected item: click first un-completed item
+                    if (selectedIdx < 0) {
+                        for (const item of items) {
+                            if (/0\\/\\d+\\s*pt/.test(item.textContent || '')) {
+                                item.click();
+                                return true;
+                            }
+                        }
+                    }
+                }
+                return false;
+            }""")
+            if advanced:
+                try:
+                    await self.page.wait_for_load_state("networkidle", timeout=5_000)
+                except Exception:
+                    await asyncio.sleep(1)
+        except Exception:
+            pass
+
+    async def _navigate(self, action: str) -> None:
+        if action == "check":
+            candidates = ["Check answer", "Check Answer", "Check My Answer", "Check", "Submit Answer"]
+            clicked = await self._click_button_all_frames(candidates)
+            if clicked:
+                await asyncio.sleep(1.5)  # Wait for Pearson feedback animation
+                await self._advance_sidebar()
+            else:
+                console.print("[yellow]Warning: could not find 'check' button[/yellow]")
+        elif action == "next":
+            candidates = ["Next Question", "Next", "Continue", "Next >"]
+            clicked = await self._click_button_all_frames(candidates)
+            if not clicked:
+                # Fallback: sidebar navigation (Pearson has no Next button)
+                await self._advance_sidebar()
