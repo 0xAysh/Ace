@@ -33,6 +33,55 @@ class QuizLoop:
         self.page = page
         self.llm = llm
 
+    async def run(self) -> None:
+        """Main loop. Runs until verify returns next_action='done'."""
+        MAX_PAGES = 100  # safety cap
+
+        for page_num in range(MAX_PAGES):
+            console.print(f"[dim]→ Page {page_num + 1}: scanning...[/dim]")
+
+            # 1. Scout
+            scan = await self._scout()
+            if not scan.questions:
+                console.print("[bold red]No questions found on page. Stopping.[/bold red]")
+                raise RuntimeError("No questions found on page")
+
+            console.print(
+                f"[dim]→ Platform: {scan.platform} | "
+                f"{'all-on-page' if scan.all_on_page else 'one-at-a-time'} | "
+                f"{len(scan.questions)} question(s)[/dim]"
+            )
+
+            # 2. Answer
+            questions_to_answer = scan.questions
+            answer_plan = await self._answer(questions_to_answer)
+
+            # 3. Select
+            await self._select(answer_plan, questions_to_answer)
+
+            # 4. Verify (with retry)
+            verify_result = await self._verify()
+            retries = 0
+            while not verify_result.all_correct and retries < 2:
+                console.print(
+                    f"[yellow]Verify found issues: {verify_result.issues}. Retrying...[/yellow]"
+                )
+                await self._select(answer_plan, questions_to_answer)
+                verify_result = await self._verify()
+                retries += 1
+
+            if verify_result.issues:
+                console.print(f"[yellow]Proceeding with issues: {verify_result.issues}[/yellow]")
+
+            # 5. Navigate or stop
+            if verify_result.next_action == "done":
+                console.print("[dim]→ All questions answered.[/dim]")
+                return
+
+            await self._navigate(verify_result.next_action)
+
+        raise RuntimeError(f"Quiz loop exceeded {MAX_PAGES} pages without completing")
+
     # ── LLM calls ─────────────────────────────────────────────────────────────
 
     async def _screenshot_b64(self) -> str:
