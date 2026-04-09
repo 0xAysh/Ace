@@ -26,6 +26,21 @@ def test_page_scan():
     assert len(scan.questions) == 1
 
 
+def test_question_multi():
+    q = Question(id="q1", text="Select all that apply", options=["A", "B", "C"], kind="multi")
+    assert q.kind == "multi"
+
+
+def test_answer_str_value():
+    plan = AnswerPlan(answers=[Answer(question_id="q1", value="A. fork")])
+    assert plan.answers[0].value == "A. fork"
+
+
+def test_answer_list_value():
+    plan = AnswerPlan(answers=[Answer(question_id="q1", value=["A. fork", "C. malloc"])])
+    assert plan.answers[0].value == ["A. fork", "C. malloc"]
+
+
 def test_answer_plan():
     plan = AnswerPlan(answers=[Answer(question_id="q1", value="A. fork")])
     assert plan.answers[0].question_id == "q1"

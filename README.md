@@ -15,7 +15,7 @@ Pick one provider and get a key:
 
 | Provider | Free? | Link |
 |---|---|---|
-| **Groq** (Kimi K2) | Free tier | https://console.groq.com |
+| **Groq** (Llama 4 Scout) | Free tier | https://console.groq.com |
 | **DeepSeek** | ~$0.001/run | https://platform.deepseek.com |
 | **Anthropic** | Paid | https://console.anthropic.com |
 
@@ -58,7 +58,7 @@ ace debug                # show what Ace sees in the current browser tab
 |---|---|
 | `provider` | `groq` \| `deepseek` \| `anthropic` |
 | `groq_api_key` | `gsk_...` |
-| `groq_model` | `qwen/qwen3-32b` |
+| `groq_model` | `meta-llama/llama-4-scout-17b-16e-instruct` |
 | `deepseek_api_key` | `sk-...` |
 | `deepseek_model` | `deepseek-chat` |
 | `anthropic_api_key` | `sk-ant-...` |

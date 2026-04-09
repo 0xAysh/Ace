@@ -11,7 +11,7 @@ Return:
   - id: "q1", "q2", etc. (sequential)
   - text: the full question text
   - options: list of answer option texts exactly as shown (e.g. ["A. fork", "B. exec", "C. malloc"]); empty list for free-text questions
-  - kind: "mcq" for multiple choice, "truefalse" for true/false, "text" for free-text input
+  - kind: "mcq" for single-select multiple choice, "truefalse" for true/false, "multi" for multi-select (checkboxes, select all that apply), "text" for free-text input
 
 If there are no questions visible on the page, return an empty questions list.
 """
@@ -21,7 +21,7 @@ You are answering academic quiz questions. Use your knowledge to determine the c
 
 Return a JSON object with a single key "answers" containing an array of objects, one per question:
 - question_id: the id (e.g. "q1")
-- value: for mcq/truefalse, the EXACT option text as provided (e.g. "A. fork"); for text questions, your answer
+- value: for mcq/truefalse, the EXACT option text as provided (e.g. "A. fork"); for multi, a JSON array of EXACT option texts for all correct answers (e.g. ["A. fork", "C. malloc"]); for text questions, your answer string
 
 Be precise. Think carefully before answering. The value must match one of the provided options exactly for mcq/truefalse questions.
 """

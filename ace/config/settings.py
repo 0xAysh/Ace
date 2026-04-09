@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
 
     # Per-provider model (can be overridden)
-    groq_model: str = "qwen/qwen3-32b"
+    groq_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
     deepseek_model: str = "deepseek-chat"
     anthropic_model: str = "claude-sonnet-4-5"
 

@@ -7,7 +7,7 @@ class Question(BaseModel):
     id: str
     text: str
     options: list[str]
-    kind: Literal["mcq", "truefalse", "text"]
+    kind: Literal["mcq", "truefalse", "multi", "text"]
 
 
 class PageScan(BaseModel):
@@ -19,7 +19,7 @@ class PageScan(BaseModel):
 
 class Answer(BaseModel):
     question_id: str
-    value: str
+    value: str | list[str]
 
 
 class AnswerPlan(BaseModel):

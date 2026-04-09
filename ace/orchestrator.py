@@ -36,8 +36,9 @@ def _make_llm(settings):
 
 
 class Orchestrator:
-    def __init__(self, dry_run: bool = False) -> None:
+    def __init__(self, dry_run: bool = False, auto_submit: bool = False) -> None:
         self.dry_run = dry_run
+        self.auto_submit = auto_submit
 
     async def run(self, target_url: Optional[str] = None) -> None:
         with run_lock():
@@ -82,32 +83,33 @@ class Orchestrator:
             await quiz_loop.run()
             console.rule("[dim]Done[/dim]")
 
-            console.print(Panel(
-                "[bold]All questions answered.[/bold]\n\n"
-                "Type [bold red]submit[/bold red] to confirm final submission, "
-                "or [bold]Ctrl+C[/bold] to cancel.",
-                border_style="red",
-                title="⚠  Final Submission",
-            ))
-            try:
-                confirm = input("  Type 'submit' to confirm: ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                console.print("\n[dim]Submission cancelled.[/dim]")
-                return
+            if not self.auto_submit:
+                console.print(Panel(
+                    "[bold]All questions answered.[/bold]\n\n"
+                    "Type [bold red]submit[/bold red] to confirm final submission, "
+                    "or [bold]Ctrl+C[/bold] to cancel.",
+                    border_style="red",
+                    title="⚠  Final Submission",
+                ))
+                try:
+                    confirm = input("  Type 'submit' to confirm: ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    console.print("\n[dim]Submission cancelled.[/dim]")
+                    return
+                if confirm != "submit":
+                    console.print("[dim]Submission cancelled. Submit manually in the browser.[/dim]")
+                    return
 
-            if confirm == "submit":
-                console.print("[dim]→ Clicking Submit in browser...[/dim]")
-                submit_locator = page.get_by_role(
-                    "button",
-                    name=re.compile(r"submit|finish|done", re.IGNORECASE),
-                )
-                if await submit_locator.count() > 0:
-                    await submit_locator.first.click()
-                    console.print("[green]Submitted.[/green]")
-                else:
-                    console.print("[yellow]Submit button not found — submit manually in the browser.[/yellow]")
+            console.print("[dim]→ Submitting...[/dim]")
+            submit_locator = page.get_by_role(
+                "button",
+                name=re.compile(r"submit|finish|done", re.IGNORECASE),
+            )
+            if await submit_locator.count() > 0:
+                await submit_locator.first.click()
+                console.print("[green]Submitted.[/green]")
             else:
-                console.print("[dim]Submission cancelled. Submit manually in the browser.[/dim]")
+                console.print("[yellow]Submit button not found — submit manually in the browser.[/yellow]")
 
         except SystemExit:
             raise
