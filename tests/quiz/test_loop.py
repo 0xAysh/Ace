@@ -313,3 +313,23 @@ async def test_page_text_falls_back_to_main_when_sparse():
     loop = QuizLoop(page, MagicMock())
     result = await loop._page_text()
     assert result == "full page content " * 20
+
+
+@pytest.mark.asyncio
+async def test_fill_text_uses_active_frame():
+    page, main_frame, player_frame = _make_page_with_frame(player_input_count=4)
+
+    textarea = MagicMock()
+    textarea.wait_for = AsyncMock()
+    textarea.fill = AsyncMock()
+
+    inputs_locator = MagicMock()
+    inputs_locator.first = textarea
+
+    player_frame.locator = MagicMock(return_value=inputs_locator)
+
+    loop = QuizLoop(page, MagicMock())
+    await loop._fill_text("my answer")
+
+    player_frame.locator.assert_called()
+    textarea.fill.assert_awaited_once_with("my answer")

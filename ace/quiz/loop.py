@@ -117,12 +117,11 @@ class QuizLoop:
         best_count = 0
         for frame in self.page.frames:
             try:
-                count = await frame.evaluate("""
-                    () => document.querySelectorAll(
-                        'input[type="radio"], input[type="checkbox"],
-                         input[type="text"], textarea'
-                    ).length
-                """)
+                count = await frame.evaluate(
+                    "() => document.querySelectorAll("
+                    "'input[type=\"radio\"], input[type=\"checkbox\"],"
+                    " input[type=\"text\"], textarea').length"
+                )
                 if count > best_count:
                     best_count = count
                     best_frame = frame
