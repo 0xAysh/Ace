@@ -289,3 +289,27 @@ async def test_click_option_by_letter_index():
     )
     inputs.nth.assert_called_once_with(2)  # C = index 2
     radio.click.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_page_text_uses_active_frame_when_long():
+    page, main_frame, player_frame = _make_page_with_frame(
+        player_input_count=4,
+        player_body="question text " * 20,  # 280 chars > 200
+    )
+    loop = QuizLoop(page, MagicMock())
+    result = await loop._page_text()
+    assert result == "question text " * 20
+    player_frame.inner_text.assert_awaited_once_with("body")
+
+
+@pytest.mark.asyncio
+async def test_page_text_falls_back_to_main_when_sparse():
+    page, main_frame, player_frame = _make_page_with_frame(
+        player_input_count=4,
+        player_body="nav",  # < 200 chars
+    )
+    page.inner_text = AsyncMock(return_value="full page content " * 20)
+    loop = QuizLoop(page, MagicMock())
+    result = await loop._page_text()
+    assert result == "full page content " * 20

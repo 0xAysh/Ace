@@ -93,23 +93,23 @@ class QuizLoop:
         return base64.b64encode(data).decode()
 
     async def _page_text(self) -> str:
-        """Extract text from the page including iframe content."""
-        parts = []
+        """Extract body text from the active frame.
+
+        Falls back to the top-level page body if the active frame returns
+        fewer than 200 chars (e.g. it only contains sidebar navigation).
+        """
+        frame = await self._active_frame()
         try:
-            parts.append(await self.page.inner_text("body"))
+            text = await frame.inner_text("body")
+            if len(text) > 200:
+                return text
         except Exception:
             pass
-        # Also collect text from iframes (Pearson MyLab, etc.)
-        for frame in self.page.frames[1:]:  # skip main frame
-            try:
-                parts.append(await frame.inner_text("body"))
-            except Exception:
-                pass
-        return "\n".join(parts)
-
-    def _all_frames(self):
-        """Return main frame + all child frames."""
-        return self.page.frames
+        # Sparse active frame — fall back to main page body
+        try:
+            return await self.page.inner_text("body")
+        except Exception:
+            return ""
 
     async def _active_frame(self):
         """Return the frame with the most interactive inputs, or main_frame if none."""
@@ -232,17 +232,17 @@ class QuizLoop:
         )
 
     async def _fill_text(self, value: str) -> None:
-        """Fill the first visible text input or textarea, searching all frames."""
-        for frame in self._all_frames():
-            for selector in ("textarea", "input[type='text']", "input:not([type])"):
-                el = frame.locator(selector).first
-                try:
-                    await el.wait_for(state="visible", timeout=1_500)
-                    await el.fill(value)
-                    return
-                except Exception:
-                    continue
-        console.print(f"[yellow]Warning: could not find text input to fill[/yellow]")
+        """Fill the first visible text input or textarea in the active frame."""
+        frame = await self._active_frame()
+        for selector in ("textarea", "input[type='text']", "input:not([type])"):
+            el = frame.locator(selector).first
+            try:
+                await el.wait_for(state="visible", timeout=1_500)
+                await el.fill(value)
+                return
+            except Exception:
+                continue
+        console.print("[yellow]Warning: could not find text input to fill[/yellow]")
 
     async def _verify(self) -> VerifyResult:
         b64 = await self._screenshot_b64()
@@ -267,45 +267,49 @@ class QuizLoop:
         else:
             return
 
-        pattern = re.compile('|'.join(re.escape(n) for n in candidates), re.IGNORECASE)
+        pattern = re.compile(
+            '|'.join(re.escape(n) for n in candidates), re.IGNORECASE
+        )
+        frame = await self._active_frame()
 
-        for frame in self._all_frames():
-            # Playwright role-based
-            btn = frame.get_by_role("button", name=pattern)
-            try:
-                if await btn.count() > 0:
-                    await btn.first.click()
-                    try:
-                        await self.page.wait_for_load_state("networkidle", timeout=5_000)
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
+        # Playwright role-based search in active frame
+        btn = frame.get_by_role("button", name=pattern)
+        try:
+            if await btn.count() > 0:
+                await btn.first.click()
+                try:
+                    await self.page.wait_for_load_state("networkidle", timeout=5_000)
+                except Exception:
+                    pass  # SPAs with long-polling may never reach networkidle
+                return
+        except Exception:
+            pass
 
-            # JS fallback — find button by normalized text
-            try:
-                clicked = await frame.evaluate(
-                    """(names) => {
-                        const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
-                        for (const el of document.querySelectorAll('button, [role="button"], input[type="submit"]')) {
-                            const t = norm(el.textContent || el.value || '');
-                            if (names.some(n => t.includes(n.toLowerCase()))) {
-                                el.click();
-                                return true;
-                            }
+        # JS fallback — normalized text search in active frame
+        try:
+            clicked = await frame.evaluate(
+                """(names) => {
+                    const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
+                    for (const el of document.querySelectorAll(
+                        'button, [role="button"], input[type="submit"]'
+                    )) {
+                        const t = norm(el.textContent || el.value || '');
+                        if (names.some(n => t.includes(n.toLowerCase()))) {
+                            el.click();
+                            return true;
                         }
-                        return false;
-                    }""",
-                    candidates,
-                )
-                if clicked:
-                    try:
-                        await self.page.wait_for_load_state("networkidle", timeout=5_000)
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
+                    }
+                    return false;
+                }""",
+                candidates,
+            )
+            if clicked:
+                try:
+                    await self.page.wait_for_load_state("networkidle", timeout=5_000)
+                except Exception:
+                    pass
+                return
+        except Exception:
+            pass
 
         console.print(f"[yellow]Warning: could not find '{action}' button[/yellow]")
