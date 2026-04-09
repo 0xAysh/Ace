@@ -120,17 +120,14 @@ async def test_scout_passes_screenshot():
 async def test_select_clicks_mcq_option():
     page, main_frame, player_frame = _make_page_with_frame(player_input_count=2)
 
-    el = MagicMock()
-    el.wait_for = AsyncMock()
-    el.click = AsyncMock()
+    radio = MagicMock()
+    radio.click = AsyncMock()
 
-    filtered_locator = MagicMock()
-    filtered_locator.first = el
+    inputs = MagicMock()
+    inputs.count = AsyncMock(return_value=2)
+    inputs.nth = MagicMock(return_value=radio)
 
-    locator = MagicMock()
-    locator.filter = MagicMock(return_value=filtered_locator)
-
-    player_frame.locator = MagicMock(return_value=locator)
+    player_frame.locator = MagicMock(return_value=inputs)
 
     questions = [Question(id="q1", text="X?", options=["A. fork", "B. exec"], kind="mcq")]
     plan = AnswerPlan(answers=[Answer(question_id="q1", value="A. fork")])
@@ -138,10 +135,12 @@ async def test_select_clicks_mcq_option():
     loop = QuizLoop(page, MagicMock())
     await loop._select(plan, questions)
 
-    # Verify the locator strategy was called
-    player_frame.locator.assert_called()
-    el.wait_for.assert_awaited_once()
-    el.click.assert_awaited_once()
+    # Verify the index-based locator strategy was called
+    player_frame.locator.assert_called_with(
+        "input[type='radio'], input[type='checkbox']"
+    )
+    inputs.nth.assert_called_once_with(0)  # A = index 0
+    radio.click.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -264,3 +263,26 @@ def test_parse_option_letter_returns_none_when_no_prefix():
     assert loop._parse_option_letter("True") is None
     assert loop._parse_option_letter("False") is None
     assert loop._parse_option_letter("yes") is None
+
+
+@pytest.mark.asyncio
+async def test_click_option_by_letter_index():
+    page, main_frame, player_frame = _make_page_with_frame(player_input_count=4)
+
+    radio = MagicMock()
+    radio.click = AsyncMock()
+
+    inputs = MagicMock()
+    inputs.count = AsyncMock(return_value=4)
+    inputs.nth = MagicMock(return_value=radio)
+
+    player_frame.locator = MagicMock(return_value=inputs)
+
+    loop = QuizLoop(page, MagicMock())
+    await loop._click_option("C. something")
+
+    player_frame.locator.assert_called_with(
+        "input[type='radio'], input[type='checkbox']"
+    )
+    inputs.nth.assert_called_once_with(2)  # C = index 2
+    radio.click.assert_awaited_once()

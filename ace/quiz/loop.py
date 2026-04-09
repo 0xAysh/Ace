@@ -180,74 +180,56 @@ class QuizLoop:
                 await self._fill_text(ans.value if isinstance(ans.value, str) else ans.value[0])
 
     async def _click_option(self, option_text: str) -> None:
-        """Click a radio/checkbox option by its label text.
+        """Click a radio/checkbox option.
 
-        Searches main frame + all iframes. Handles platforms like Pearson MyLab
-        that render double spaces between the letter and answer text.
+        Stage 1: parse the letter prefix (e.g. 'D') and click the Nth
+        input[type=radio/checkbox] in the active frame — immune to text
+        formatting differences (whitespace, encoding, double spaces).
+
+        Stage 2 (fallback): JS normalized-text search in the active frame.
+        Used for options without a letter prefix (e.g. 'True', 'False').
         """
-        # Also try without the "A. " / "D. " letter prefix — more lenient match
-        stripped = re.sub(r'^[A-Za-z]\.\s+', '', option_text)
-        texts = [option_text] if stripped == option_text else [option_text, stripped]
+        frame = await self._active_frame()
+        letter = self._parse_option_letter(option_text)
 
-        # Regex that collapses any whitespace run — handles "D.  $75,000" vs "D. $75,000"
-        ws_pattern = re.compile(
-            r'\s+'.join(re.escape(w) for w in option_text.split()), re.IGNORECASE
-        )
-
-        selectors = [
-            "label",
-            "[role='radio'], [role='checkbox'], [role='option']",
-            "li, .answer, .option, .choice, .answer-choice, .response",
-        ]
-
-        for frame in self._all_frames():
-            # Playwright locator strategies (exact text + stripped prefix)
-            for text in texts:
-                for sel in selectors:
-                    el = frame.locator(sel).filter(has_text=text).first
-                    try:
-                        await el.wait_for(state="visible", timeout=1_000)
-                        await el.click()
-                        return
-                    except Exception:
-                        pass
-
-            # Regex strategy — whitespace-flexible (catches Pearson double-space)
-            for sel in selectors:
-                el = frame.locator(sel).filter(has_text=ws_pattern).first
-                try:
-                    await el.wait_for(state="visible", timeout=1_000)
-                    await el.click()
-                    return
-                except Exception:
-                    pass
-
-            # JS fallback — normalize all whitespace in the DOM and compare
+        if letter:
+            index = ord(letter) - ord('A')
             try:
-                clicked = await frame.evaluate(
-                    """(text) => {
-                        const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
-                        const target = norm(text);
-                        const sels = ['label', '[role="radio"]', '[role="checkbox"]',
-                                      '[role="option"]', 'li'];
-                        for (const sel of sels) {
-                            for (const el of document.querySelectorAll(sel)) {
-                                if (norm(el.textContent).includes(target)) {
-                                    el.click();
-                                    return true;
-                                }
-                            }
-                        }
-                        return false;
-                    }""",
-                    option_text,
-                )
-                if clicked:
+                inputs = frame.locator("input[type='radio'], input[type='checkbox']")
+                if await inputs.count() > index:
+                    await inputs.nth(index).click()
                     return
             except Exception:
                 pass
 
-        console.print(f"[yellow]Warning: could not find option '{option_text[:60]}' to click[/yellow]")
+        # JS fallback: normalize whitespace, search labels/roles in active frame
+        try:
+            clicked = await frame.evaluate(
+                """(text) => {
+                    const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
+                    const target = norm(text);
+                    const sels = ['label', '[role="radio"]', '[role="checkbox"]',
+                                  '[role="option"]', 'li'];
+                    for (const sel of sels) {
+                        for (const el of document.querySelectorAll(sel)) {
+                            if (norm(el.textContent).includes(target)) {
+                                el.click();
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                }""",
+                option_text,
+            )
+            if clicked:
+                return
+        except Exception:
+            pass
+
+        console.print(
+            f"[yellow]Warning: could not find option '{option_text[:60]}' to click[/yellow]"
+        )
 
     async def _fill_text(self, value: str) -> None:
         """Fill the first visible text input or textarea, searching all frames."""
