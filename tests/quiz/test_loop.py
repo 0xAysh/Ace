@@ -117,3 +117,43 @@ async def test_select_clicks_mcq_option():
     # Verify that click was actually called on the first successful strategy's locator
     first_locator = page.locator.return_value.filter.return_value.first
     first_locator.click.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_verify_returns_verify_result():
+    page = _make_page()
+    llm = _make_llm()
+    vr = VerifyResult(all_correct=True, issues=[], next_action="next")
+    llm.ainvoke = AsyncMock(return_value=_completion(vr))
+
+    loop = QuizLoop(page, llm)
+    result = await loop._verify()
+
+    assert result.all_correct is True
+    assert result.next_action == "next"
+    # Verify must include a screenshot
+    call_args = llm.ainvoke.call_args
+    messages = call_args[0][0]
+    from browser_use.llm.messages import ContentPartImageParam
+    found_image = any(
+        isinstance(part, ContentPartImageParam)
+        for msg in messages
+        if hasattr(msg, 'content') and isinstance(msg.content, list)
+        for part in msg.content
+    )
+    assert found_image
+
+
+@pytest.mark.asyncio
+async def test_navigate_next_clicks_button():
+    page = _make_page()
+    btn = AsyncMock()
+    btn.count = AsyncMock(return_value=1)
+    btn.click = AsyncMock()
+    page.get_by_role = MagicMock(return_value=btn)
+    page.wait_for_load_state = AsyncMock()
+
+    llm = _make_llm()
+    loop = QuizLoop(page, llm)
+    await loop._navigate("next")
+    btn.click.assert_called_once()

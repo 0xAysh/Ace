@@ -127,3 +127,38 @@ class QuizLoop:
             except Exception:
                 continue
         console.print(f"[yellow]Warning: could not find text input to fill[/yellow]")
+
+    async def _verify(self) -> VerifyResult:
+        b64 = await self._screenshot_b64()
+        text = await self._page_text()
+        messages = [
+            SystemMessage(content=VERIFY_PROMPT),
+            UserMessage(content=[
+                ContentPartTextParam(text=f"Page text:\n{text[:2000]}"),
+                ContentPartImageParam(
+                    image_url=ImageURL(url=f"data:image/png;base64,{b64}", detail="high")
+                ),
+            ]),
+        ]
+        result = await self.llm.ainvoke(messages, output_format=VerifyResult)
+        return result.completion
+
+    async def _navigate(self, action: str) -> None:
+        if action == "check":
+            candidates = ["Check Answer", "Check My Answer", "Check", "Submit Answer"]
+        elif action == "next":
+            candidates = ["Next Question", "Next", "Continue", "Next >"]
+        else:
+            return
+
+        for name in candidates:
+            btn = self.page.get_by_role("button", name=name)
+            try:
+                if await btn.count() > 0:
+                    await btn.click()
+                    await self.page.wait_for_load_state("networkidle", timeout=5_000)
+                    return
+            except Exception:
+                continue
+
+        console.print(f"[yellow]Warning: could not find '{action}' button[/yellow]")
