@@ -97,12 +97,15 @@ class Orchestrator:
 
             if confirm == "submit":
                 console.print("[dim]→ Clicking Submit in browser...[/dim]")
-                submit_btn = page.get_by_role(
+                submit_locator = page.get_by_role(
                     "button",
                     name=re.compile(r"submit|finish|done", re.IGNORECASE),
-                ).first
-                await submit_btn.click()
-                console.print("[green]Submitted.[/green]")
+                )
+                if await submit_locator.count() > 0:
+                    await submit_locator.first.click()
+                    console.print("[green]Submitted.[/green]")
+                else:
+                    console.print("[yellow]Submit button not found — submit manually in the browser.[/yellow]")
             else:
                 console.print("[dim]Submission cancelled. Submit manually in the browser.[/dim]")
 
