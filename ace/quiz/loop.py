@@ -71,3 +71,59 @@ class QuizLoop:
         ]
         result = await self.llm.ainvoke(messages, output_format=AnswerPlan)
         return result.completion
+
+    # ── Browser interactions ───────────────────────────────────────────────────
+
+    async def _select(self, plan: AnswerPlan, questions: list[Question]) -> None:
+        q_map = {q.id: q for q in questions}
+        for ans in plan.answers:
+            question = q_map.get(ans.question_id)
+            if question is None:
+                continue
+            if question.kind in ("mcq", "truefalse"):
+                await self._click_option(ans.value)
+            elif question.kind == "text":
+                await self._fill_text(ans.value)
+
+    async def _click_option(self, option_text: str) -> None:
+        """Click a radio/checkbox option by its label text."""
+        # Strategy 1: label containing exact option text
+        label = self.page.locator("label").filter(has_text=option_text).first
+        try:
+            await label.wait_for(state="visible", timeout=3_000)
+            await label.click()
+            return
+        except Exception:
+            pass
+
+        # Strategy 2: any element with that exact text
+        el = self.page.get_by_text(option_text, exact=True).first
+        try:
+            await el.wait_for(state="visible", timeout=3_000)
+            await el.click()
+            return
+        except Exception:
+            pass
+
+        # Strategy 3: radio input whose following label contains the text
+        el = self.page.locator(f'input[type="radio"]').filter(has_text=option_text).first
+        try:
+            await el.wait_for(state="visible", timeout=3_000)
+            await el.click()
+            return
+        except Exception:
+            pass
+
+        console.print(f"[yellow]Warning: could not find option '{option_text[:60]}' to click[/yellow]")
+
+    async def _fill_text(self, value: str) -> None:
+        """Fill the first visible text input or textarea."""
+        for selector in ("textarea:visible", "input[type='text']:visible", "input:not([type]):visible"):
+            el = self.page.locator(selector).first
+            try:
+                await el.wait_for(state="visible", timeout=3_000)
+                await el.fill(value)
+                return
+            except Exception:
+                continue
+        console.print(f"[yellow]Warning: could not find text input to fill[/yellow]")

@@ -90,3 +90,26 @@ async def test_scout_passes_screenshot():
                     found_image = True
                     assert expected_b64 in part.image_url.url
     assert found_image, "Scout call must include a screenshot"
+
+
+@pytest.mark.asyncio
+async def test_select_clicks_mcq_option():
+    page = _make_page()
+    label_mock = AsyncMock()
+    page.locator = MagicMock(return_value=MagicMock(
+        filter=MagicMock(return_value=MagicMock(
+            first=MagicMock(
+                click=AsyncMock(),
+                wait_for=AsyncMock(),
+            )
+        ))
+    ))
+
+    llm = _make_llm()
+    questions = [Question(id="q1", text="X?", options=["A. fork", "B. exec"], kind="mcq")]
+    plan = AnswerPlan(answers=[Answer(question_id="q1", value="A. fork")])
+
+    loop = QuizLoop(page, llm)
+    # Should not raise
+    await loop._select(plan, questions)
+    page.locator.assert_called()
