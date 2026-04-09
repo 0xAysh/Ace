@@ -188,21 +188,23 @@ async def test_navigate_next_clicks_button():
 
 @pytest.mark.asyncio
 async def test_run_completes_single_question():
-    page = _make_page()
-    page.locator = MagicMock(return_value=MagicMock(
-        filter=MagicMock(return_value=MagicMock(
-            first=MagicMock(click=AsyncMock(), wait_for=AsyncMock())
-        ))
-    ))
-    page.get_by_role = MagicMock(return_value=MagicMock(
-        count=AsyncMock(return_value=1),
-        click=AsyncMock(),
-    ))
-    page.wait_for_load_state = AsyncMock()
+    page, main_frame, player_frame = _make_page_with_frame(
+        player_input_count=2,
+        player_body="question text " * 20,
+    )
+
+    radio = MagicMock()
+    radio.click = AsyncMock()
+
+    inputs = MagicMock()
+    inputs.count = AsyncMock(return_value=2)
+    inputs.nth = MagicMock(return_value=radio)
+
+    player_frame.locator = MagicMock(return_value=inputs)
 
     llm = _make_llm()
     scan = PageScan(
-        platform="canvas",
+        platform="pearson",
         all_on_page=False,
         has_check_button=False,
         questions=[Question(id="q1", text="What?", options=["A. fork", "B. exec"], kind="mcq")],
@@ -210,7 +212,6 @@ async def test_run_completes_single_question():
     plan = AnswerPlan(answers=[Answer(question_id="q1", value="A. fork")])
     verify_done = VerifyResult(all_correct=True, issues=[], next_action="done")
 
-    # ainvoke returns scan → plan → verify_done
     llm.ainvoke = AsyncMock(side_effect=[
         _completion(scan),
         _completion(plan),
@@ -218,9 +219,11 @@ async def test_run_completes_single_question():
     ])
 
     loop = QuizLoop(page, llm)
-    await loop.run()  # should return without error
+    await loop.run()
 
     assert llm.ainvoke.call_count == 3  # scout + answer + verify
+    inputs.nth.assert_called_with(0)    # A = index 0
+    radio.click.assert_awaited()
 
 
 @pytest.mark.asyncio
