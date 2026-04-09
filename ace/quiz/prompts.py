@@ -5,9 +5,9 @@ Examine the screenshot and page text carefully and return structured data about 
 
 Return:
 - platform: the LMS name ("canvas", "pearson", "blackboard", "moodle", "generic")
-- all_on_page: true if ALL quiz questions are visible on this single page at once; false if only one question is shown at a time with a Next button
-- has_check_button: true if a "Check Answer", "Check My Answer", or "Submit Answer" button is currently visible
-- questions: list of every visible question, each with:
+- all_on_page: true if ALL quiz questions are visible in the main content area at once; false if only one question is shown at a time
+- has_check_button: true if a "Check answer", "Check Answer", "Check My Answer", or "Submit Answer" button is currently visible
+- questions: list of every question in the MAIN CONTENT AREA only (ignore sidebar/navigation lists), each with:
   - id: "q1", "q2", etc. (sequential)
   - text: the full question text
   - options: list of answer option texts exactly as shown (e.g. ["A. fork", "B. exec", "C. malloc"]); empty list for free-text questions
@@ -29,15 +29,20 @@ Be precise. Think carefully before answering. The value must match one of the pr
 VERIFY_PROMPT = """\
 You are verifying that quiz answers have been correctly selected on screen.
 
-Examine the updated screenshot carefully. For each question visible:
+IMPORTANT: Focus ONLY on the main question content area (the question being actively answered).
+IGNORE any question list, sidebar navigation, or question index panel — those show overall assignment
+progress and are NOT the questions you need to verify.
+
+Examine the updated screenshot carefully. For each question in the main content area:
 - Check if the answer is visually selected (radio button filled in, checkbox checked, text entered in field)
 - Note any answer that appears unselected or wrong
 
 Return:
-- all_correct: true if every visible answer appears correctly selected
-- issues: list of strings describing problems, e.g. ["q2: option B appears unselected", "q3: text field is empty"]
+- all_correct: true if every question in the main content area has an answer selected
+- issues: list of strings describing problems, e.g. ["q1: no option selected", "q1: text field is empty"]
+  (leave empty if all_correct is true)
 - next_action:
-  - "check" if a Check Answer / Check My Answer button is visible and should be clicked
-  - "next" if a Next / Next Question / Continue button is visible, OR if a Submit button is visible but some questions appear unanswered or unselected
+  - "check" if a "Check answer" / "Check Answer" / "Check My Answer" button is visible at the bottom of the page
+  - "next" if a Next / Next Question / Continue button is visible
   - "done" if a Submit / Finish / Done button is visible AND all visible questions appear correctly answered
 """

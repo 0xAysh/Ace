@@ -276,7 +276,7 @@ class QuizLoop:
 
     async def _navigate(self, action: str) -> None:
         if action == "check":
-            candidates = ["Check Answer", "Check My Answer", "Check", "Submit Answer"]
+            candidates = ["Check answer", "Check Answer", "Check My Answer", "Check", "Submit Answer"]
         elif action == "next":
             candidates = ["Next Question", "Next", "Continue", "Next >"]
         else:
@@ -285,46 +285,53 @@ class QuizLoop:
         pattern = re.compile(
             '|'.join(re.escape(n) for n in candidates), re.IGNORECASE
         )
-        frame = await self._active_frame()
 
-        # Playwright role-based search in active frame
-        btn = frame.get_by_role("button", name=pattern)
-        try:
-            if await btn.count() > 0:
-                await btn.first.click()
-                try:
-                    await self.page.wait_for_load_state("networkidle", timeout=5_000)
-                except Exception:
-                    pass  # SPAs with long-polling may never reach networkidle
-                return
-        except Exception:
-            pass
+        # Search all frames + page top-level (Pearson puts buttons outside the active iframe)
+        active_frame = await self._active_frame()
+        frames_to_search = [active_frame]
+        for frame in self.page.frames:
+            if frame not in frames_to_search:
+                frames_to_search.append(frame)
 
-        # JS fallback — normalized text search in active frame
-        try:
-            clicked = await frame.evaluate(
-                """(names) => {
-                    const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
-                    for (const el of document.querySelectorAll(
-                        'button, [role="button"], input[type="submit"]'
-                    )) {
-                        const t = norm(el.textContent || el.value || '');
-                        if (names.some(n => t.includes(n.toLowerCase()))) {
-                            el.click();
-                            return true;
+        for frame in frames_to_search:
+            # Playwright role-based search
+            btn = frame.get_by_role("button", name=pattern)
+            try:
+                if await btn.count() > 0:
+                    await btn.first.click()
+                    try:
+                        await self.page.wait_for_load_state("networkidle", timeout=5_000)
+                    except Exception:
+                        pass
+                    return
+            except Exception:
+                pass
+
+            # JS fallback — normalized text search
+            try:
+                clicked = await frame.evaluate(
+                    """(names) => {
+                        const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
+                        for (const el of document.querySelectorAll(
+                            'button, [role="button"], input[type="submit"]'
+                        )) {
+                            const t = norm(el.textContent || el.value || '');
+                            if (names.some(n => t.includes(n.toLowerCase()))) {
+                                el.click();
+                                return true;
+                            }
                         }
-                    }
-                    return false;
-                }""",
-                candidates,
-            )
-            if clicked:
-                try:
-                    await self.page.wait_for_load_state("networkidle", timeout=5_000)
-                except Exception:
-                    pass
-                return
-        except Exception:
-            pass
+                        return false;
+                    }""",
+                    candidates,
+                )
+                if clicked:
+                    try:
+                        await self.page.wait_for_load_state("networkidle", timeout=5_000)
+                    except Exception:
+                        pass
+                    return
+            except Exception:
+                pass
 
         console.print(f"[yellow]Warning: could not find '{action}' button[/yellow]")
