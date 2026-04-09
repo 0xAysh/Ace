@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 from ace.quiz.models import Question, PageScan, Answer, AnswerPlan, VerifyResult
 
 
@@ -36,5 +37,10 @@ def test_verify_result_done():
 
 
 def test_verify_result_invalid_action():
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         VerifyResult(all_correct=True, issues=[], next_action="invalid")
+
+
+def test_question_invalid_kind():
+    with pytest.raises(ValidationError):
+        Question(id="q1", text="X?", options=[], kind="multiple_choice")
