@@ -9,6 +9,7 @@ QuizLoop: platform-agnostic quiz solver.
 Playwright handles all clicking.
 """
 import base64
+import re
 
 from playwright.async_api import Page
 from rich.console import Console
@@ -152,11 +153,14 @@ class QuizLoop:
             return
 
         for name in candidates:
-            btn = self.page.get_by_role("button", name=name)
+            btn = self.page.get_by_role("button", name=re.compile(re.escape(name), re.IGNORECASE))
             try:
                 if await btn.count() > 0:
                     await btn.click()
-                    await self.page.wait_for_load_state("networkidle", timeout=5_000)
+                    try:
+                        await self.page.wait_for_load_state("networkidle", timeout=5_000)
+                    except Exception:
+                        pass  # page transition may not reach networkidle (SPAs with long-polling)
                     return
             except Exception:
                 continue
