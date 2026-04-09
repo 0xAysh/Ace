@@ -1,1 +1,3 @@
-# ace/quiz/__init__.py — QuizLoop will be exported here in Task 4
+from ace.quiz.loop import QuizLoop
+
+__all__ = ["QuizLoop"]
