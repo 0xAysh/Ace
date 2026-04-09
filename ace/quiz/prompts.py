@@ -19,7 +19,7 @@ If there are no questions visible on the page, return an empty questions list.
 ANSWER_PROMPT = """\
 You are answering academic quiz questions. Use your knowledge to determine the correct answer for each question.
 
-For each question, return:
+Return a JSON object with a single key "answers" containing an array of objects, one per question:
 - question_id: the id (e.g. "q1")
 - value: for mcq/truefalse, the EXACT option text as provided (e.g. "A. fork"); for text questions, your answer
 
@@ -38,6 +38,6 @@ Return:
 - issues: list of strings describing problems, e.g. ["q2: option B appears unselected", "q3: text field is empty"]
 - next_action:
   - "check" if a Check Answer / Check My Answer button is visible and should be clicked
-  - "next" if a Next / Next Question / Continue button is visible to move to the next question
-  - "done" if only a Submit / Finish / Done button is visible and there are no more unanswered questions
+  - "next" if a Next / Next Question / Continue button is visible, OR if a Submit button is visible but some questions appear unanswered or unselected
+  - "done" if a Submit / Finish / Done button is visible AND all visible questions appear correctly answered
 """
