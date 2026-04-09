@@ -25,6 +25,30 @@ def _completion(value):
     return result
 
 
+def _make_frame(input_count=0, body_text=""):
+    """Minimal frame mock with configurable input count and body text."""
+    frame = MagicMock()
+    frame.evaluate = AsyncMock(return_value=input_count)
+    frame.inner_text = AsyncMock(return_value=body_text)
+    frame.locator = MagicMock()
+    frame.get_by_role = MagicMock()
+    return frame
+
+
+def _make_page_with_frame(player_input_count=4, player_body="question text " * 20):
+    """Page mock with a main_frame (no inputs) and one player frame (has inputs)."""
+    main_frame = _make_frame(input_count=0, body_text="navigation sidebar")
+    player_frame = _make_frame(input_count=player_input_count, body_text=player_body)
+
+    page = AsyncMock()
+    page.screenshot = AsyncMock(return_value=b"fakepng")
+    page.inner_text = AsyncMock(return_value="top-level body")
+    page.wait_for_load_state = AsyncMock()
+    page.main_frame = main_frame
+    page.frames = [main_frame, player_frame]
+    return page, main_frame, player_frame
+
+
 @pytest.mark.asyncio
 async def test_scout_returns_page_scan():
     page = _make_page()
@@ -206,3 +230,33 @@ async def test_run_raises_if_no_questions():
     loop = QuizLoop(page, llm)
     with pytest.raises(RuntimeError, match="No questions found on page"):
         await loop.run()
+
+
+@pytest.mark.asyncio
+async def test_active_frame_picks_frame_with_most_inputs():
+    page, main_frame, player_frame = _make_page_with_frame(player_input_count=4)
+    loop = QuizLoop(page, MagicMock())
+    result = await loop._active_frame()
+    assert result is player_frame
+
+
+@pytest.mark.asyncio
+async def test_active_frame_falls_back_to_main_when_no_inputs():
+    page, main_frame, player_frame = _make_page_with_frame(player_input_count=0)
+    loop = QuizLoop(page, MagicMock())
+    result = await loop._active_frame()
+    assert result is main_frame
+
+
+def test_parse_option_letter_extracts_uppercase():
+    loop = QuizLoop(MagicMock(), MagicMock())
+    assert loop._parse_option_letter("D. $75,000; $64,000.") == "D"
+    assert loop._parse_option_letter("A. fork") == "A"
+    assert loop._parse_option_letter("b. lowercase") == "B"
+
+
+def test_parse_option_letter_returns_none_when_no_prefix():
+    loop = QuizLoop(MagicMock(), MagicMock())
+    assert loop._parse_option_letter("True") is None
+    assert loop._parse_option_letter("False") is None
+    assert loop._parse_option_letter("yes") is None

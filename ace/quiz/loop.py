@@ -93,11 +93,47 @@ class QuizLoop:
         return base64.b64encode(data).decode()
 
     async def _page_text(self) -> str:
+        """Extract text from the page including iframe content."""
+        parts = []
         try:
-            return await self.page.inner_text("body")
-        except Exception as e:
-            console.print(f"[dim]Warning: could not extract page text: {e}[/dim]")
-            return ""
+            parts.append(await self.page.inner_text("body"))
+        except Exception:
+            pass
+        # Also collect text from iframes (Pearson MyLab, etc.)
+        for frame in self.page.frames[1:]:  # skip main frame
+            try:
+                parts.append(await frame.inner_text("body"))
+            except Exception:
+                pass
+        return "\n".join(parts)
+
+    def _all_frames(self):
+        """Return main frame + all child frames."""
+        return self.page.frames
+
+    async def _active_frame(self):
+        """Return the frame with the most interactive inputs, or main_frame if none."""
+        best_frame = self.page.main_frame
+        best_count = 0
+        for frame in self.page.frames:
+            try:
+                count = await frame.evaluate("""
+                    () => document.querySelectorAll(
+                        'input[type="radio"], input[type="checkbox"],
+                         input[type="text"], textarea'
+                    ).length
+                """)
+                if count > best_count:
+                    best_count = count
+                    best_frame = frame
+            except Exception:
+                pass
+        return best_frame
+
+    def _parse_option_letter(self, option_text: str) -> str | None:
+        """Extract uppercase letter from 'A. foo' → 'A', or None for 'True'."""
+        m = re.match(r'^([A-Za-z])\.\s', option_text)
+        return m.group(1).upper() if m else None
 
     async def _scout(self) -> PageScan:
         b64 = await self._screenshot_b64()
@@ -135,51 +171,95 @@ class QuizLoop:
             if question is None:
                 continue
             if question.kind in ("mcq", "truefalse"):
-                await self._click_option(ans.value)
+                await self._click_option(ans.value if isinstance(ans.value, str) else ans.value[0])
+            elif question.kind == "multi":
+                values = ans.value if isinstance(ans.value, list) else [ans.value]
+                for v in values:
+                    await self._click_option(v)
             elif question.kind == "text":
-                await self._fill_text(ans.value)
+                await self._fill_text(ans.value if isinstance(ans.value, str) else ans.value[0])
 
     async def _click_option(self, option_text: str) -> None:
-        """Click a radio/checkbox option by its label text."""
-        # Strategy 1: label containing exact option text
-        label = self.page.locator("label").filter(has_text=option_text).first
-        try:
-            await label.wait_for(state="visible", timeout=3_000)
-            await label.click()
-            return
-        except Exception:
-            pass
+        """Click a radio/checkbox option by its label text.
 
-        # Strategy 2: any element with that exact text
-        el = self.page.get_by_text(option_text, exact=True).first
-        try:
-            await el.wait_for(state="visible", timeout=3_000)
-            await el.click()
-            return
-        except Exception:
-            pass
+        Searches main frame + all iframes. Handles platforms like Pearson MyLab
+        that render double spaces between the letter and answer text.
+        """
+        # Also try without the "A. " / "D. " letter prefix — more lenient match
+        stripped = re.sub(r'^[A-Za-z]\.\s+', '', option_text)
+        texts = [option_text] if stripped == option_text else [option_text, stripped]
 
-        # Strategy 3: list item or option container that wraps the text
-        el = self.page.locator("li, .answer, .option, .choice").filter(has_text=option_text).first
-        try:
-            await el.wait_for(state="visible", timeout=3_000)
-            await el.click()
-            return
-        except Exception:
-            pass
+        # Regex that collapses any whitespace run — handles "D.  $75,000" vs "D. $75,000"
+        ws_pattern = re.compile(
+            r'\s+'.join(re.escape(w) for w in option_text.split()), re.IGNORECASE
+        )
+
+        selectors = [
+            "label",
+            "[role='radio'], [role='checkbox'], [role='option']",
+            "li, .answer, .option, .choice, .answer-choice, .response",
+        ]
+
+        for frame in self._all_frames():
+            # Playwright locator strategies (exact text + stripped prefix)
+            for text in texts:
+                for sel in selectors:
+                    el = frame.locator(sel).filter(has_text=text).first
+                    try:
+                        await el.wait_for(state="visible", timeout=1_000)
+                        await el.click()
+                        return
+                    except Exception:
+                        pass
+
+            # Regex strategy — whitespace-flexible (catches Pearson double-space)
+            for sel in selectors:
+                el = frame.locator(sel).filter(has_text=ws_pattern).first
+                try:
+                    await el.wait_for(state="visible", timeout=1_000)
+                    await el.click()
+                    return
+                except Exception:
+                    pass
+
+            # JS fallback — normalize all whitespace in the DOM and compare
+            try:
+                clicked = await frame.evaluate(
+                    """(text) => {
+                        const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
+                        const target = norm(text);
+                        const sels = ['label', '[role="radio"]', '[role="checkbox"]',
+                                      '[role="option"]', 'li'];
+                        for (const sel of sels) {
+                            for (const el of document.querySelectorAll(sel)) {
+                                if (norm(el.textContent).includes(target)) {
+                                    el.click();
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    }""",
+                    option_text,
+                )
+                if clicked:
+                    return
+            except Exception:
+                pass
 
         console.print(f"[yellow]Warning: could not find option '{option_text[:60]}' to click[/yellow]")
 
     async def _fill_text(self, value: str) -> None:
-        """Fill the first visible text input or textarea."""
-        for selector in ("textarea:visible", "input[type='text']:visible", "input:not([type]):visible"):
-            el = self.page.locator(selector).first
-            try:
-                await el.wait_for(state="visible", timeout=3_000)
-                await el.fill(value)
-                return
-            except Exception:
-                continue
+        """Fill the first visible text input or textarea, searching all frames."""
+        for frame in self._all_frames():
+            for selector in ("textarea", "input[type='text']", "input:not([type])"):
+                el = frame.locator(selector).first
+                try:
+                    await el.wait_for(state="visible", timeout=1_500)
+                    await el.fill(value)
+                    return
+                except Exception:
+                    continue
         console.print(f"[yellow]Warning: could not find text input to fill[/yellow]")
 
     async def _verify(self) -> VerifyResult:
@@ -205,17 +285,45 @@ class QuizLoop:
         else:
             return
 
-        for name in candidates:
-            btn = self.page.get_by_role("button", name=re.compile(re.escape(name), re.IGNORECASE))
+        pattern = re.compile('|'.join(re.escape(n) for n in candidates), re.IGNORECASE)
+
+        for frame in self._all_frames():
+            # Playwright role-based
+            btn = frame.get_by_role("button", name=pattern)
             try:
                 if await btn.count() > 0:
-                    await btn.click()
+                    await btn.first.click()
                     try:
                         await self.page.wait_for_load_state("networkidle", timeout=5_000)
                     except Exception:
-                        pass  # page transition may not reach networkidle (SPAs with long-polling)
+                        pass
                     return
             except Exception:
-                continue
+                pass
+
+            # JS fallback — find button by normalized text
+            try:
+                clicked = await frame.evaluate(
+                    """(names) => {
+                        const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
+                        for (const el of document.querySelectorAll('button, [role="button"], input[type="submit"]')) {
+                            const t = norm(el.textContent || el.value || '');
+                            if (names.some(n => t.includes(n.toLowerCase()))) {
+                                el.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }""",
+                    candidates,
+                )
+                if clicked:
+                    try:
+                        await self.page.wait_for_load_state("networkidle", timeout=5_000)
+                    except Exception:
+                        pass
+                    return
+            except Exception:
+                pass
 
         console.print(f"[yellow]Warning: could not find '{action}' button[/yellow]")
