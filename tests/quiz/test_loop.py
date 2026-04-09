@@ -80,10 +80,13 @@ async def test_scout_passes_screenshot():
     call_args = llm.ainvoke.call_args
     messages = call_args[0][0]
     from browser_use.llm.messages import ContentPartImageParam
+    import base64 as b64_module
+    expected_b64 = b64_module.b64encode(b"pngdata").decode()
     found_image = False
     for msg in messages:
         if hasattr(msg, 'content') and isinstance(msg.content, list):
             for part in msg.content:
                 if isinstance(part, ContentPartImageParam):
                     found_image = True
+                    assert expected_b64 in part.image_url.url
     assert found_image, "Scout call must include a screenshot"

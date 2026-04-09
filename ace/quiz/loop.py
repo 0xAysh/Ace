@@ -41,7 +41,8 @@ class QuizLoop:
     async def _page_text(self) -> str:
         try:
             return await self.page.inner_text("body")
-        except Exception:
+        except Exception as e:
+            console.print(f"[dim]Warning: could not extract page text: {e}[/dim]")
             return ""
 
     async def _scout(self) -> PageScan:
