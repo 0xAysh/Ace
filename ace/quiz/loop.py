@@ -193,10 +193,26 @@ class QuizLoop:
 
         if letter:
             index = ord(letter) - ord('A')
+            # Use JS click — bypasses Playwright actionability checks (hidden inputs)
             try:
-                inputs = frame.locator("input[type='radio'], input[type='checkbox']")
-                if await inputs.count() > index:
-                    await inputs.nth(index).click()
+                clicked = await frame.evaluate(
+                    """(index) => {
+                        const inputs = document.querySelectorAll(
+                            'input[type="radio"], input[type="checkbox"]'
+                        );
+                        if (inputs[index]) {
+                            inputs[index].click();
+                            // Also click the parent label if present (custom styled UIs)
+                            const label = inputs[index].closest('label') ||
+                                          document.querySelector('label[for="' + inputs[index].id + '"]');
+                            if (label) label.click();
+                            return true;
+                        }
+                        return false;
+                    }""",
+                    index,
+                )
+                if clicked:
                     return
             except Exception:
                 pass

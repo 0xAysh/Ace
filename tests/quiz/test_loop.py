@@ -119,15 +119,8 @@ async def test_scout_passes_screenshot():
 @pytest.mark.asyncio
 async def test_select_clicks_mcq_option():
     page, main_frame, player_frame = _make_page_with_frame(player_input_count=2)
-
-    radio = MagicMock()
-    radio.click = AsyncMock()
-
-    inputs = MagicMock()
-    inputs.count = AsyncMock(return_value=2)
-    inputs.nth = MagicMock(return_value=radio)
-
-    player_frame.locator = MagicMock(return_value=inputs)
+    # _active_frame count=2, then JS index click returns True
+    player_frame.evaluate = AsyncMock(side_effect=[2, True])
 
     questions = [Question(id="q1", text="X?", options=["A. fork", "B. exec"], kind="mcq")]
     plan = AnswerPlan(answers=[Answer(question_id="q1", value="A. fork")])
@@ -135,12 +128,9 @@ async def test_select_clicks_mcq_option():
     loop = QuizLoop(page, MagicMock())
     await loop._select(plan, questions)
 
-    # Verify the index-based locator strategy was called
-    player_frame.locator.assert_called_with(
-        "input[type='radio'], input[type='checkbox']"
-    )
-    inputs.nth.assert_called_once_with(0)  # A = index 0
-    radio.click.assert_awaited_once()
+    # Second evaluate call is the JS click with index=0 (A)
+    assert player_frame.evaluate.call_count == 2
+    assert player_frame.evaluate.call_args_list[1][0][1] == 0  # index 0 for A
 
 
 @pytest.mark.asyncio
@@ -192,15 +182,8 @@ async def test_run_completes_single_question():
         player_input_count=2,
         player_body="question text " * 20,
     )
-
-    radio = MagicMock()
-    radio.click = AsyncMock()
-
-    inputs = MagicMock()
-    inputs.count = AsyncMock(return_value=2)
-    inputs.nth = MagicMock(return_value=radio)
-
-    player_frame.locator = MagicMock(return_value=inputs)
+    # _active_frame is called multiple times; JS click returns True
+    player_frame.evaluate = AsyncMock(side_effect=[2, True, 2, 2])
 
     llm = _make_llm()
     scan = PageScan(
@@ -222,8 +205,6 @@ async def test_run_completes_single_question():
     await loop.run()
 
     assert llm.ainvoke.call_count == 3  # scout + answer + verify
-    inputs.nth.assert_called_with(0)    # A = index 0
-    radio.click.assert_awaited()
 
 
 @pytest.mark.asyncio
@@ -271,24 +252,16 @@ def test_parse_option_letter_returns_none_when_no_prefix():
 @pytest.mark.asyncio
 async def test_click_option_by_letter_index():
     page, main_frame, player_frame = _make_page_with_frame(player_input_count=4)
-
-    radio = MagicMock()
-    radio.click = AsyncMock()
-
-    inputs = MagicMock()
-    inputs.count = AsyncMock(return_value=4)
-    inputs.nth = MagicMock(return_value=radio)
-
-    player_frame.locator = MagicMock(return_value=inputs)
+    # JS evaluate returns True (clicked successfully) for index=2 (C)
+    player_frame.evaluate = AsyncMock(side_effect=[4, True])  # _active_frame count, then click result
 
     loop = QuizLoop(page, MagicMock())
     await loop._click_option("C. something")
 
-    player_frame.locator.assert_called_with(
-        "input[type='radio'], input[type='checkbox']"
-    )
-    inputs.nth.assert_called_once_with(2)  # C = index 2
-    radio.click.assert_awaited_once()
+    # Second evaluate call should be the index click with index=2
+    assert player_frame.evaluate.call_count == 2
+    call_args = player_frame.evaluate.call_args_list[1]
+    assert call_args[0][1] == 2  # index argument = 2 for letter C
 
 
 @pytest.mark.asyncio
