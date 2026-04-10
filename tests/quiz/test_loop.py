@@ -400,7 +400,8 @@ async def test_click_by_text_tries_all_frames():
 
 @pytest.mark.asyncio
 async def test_navigate_smart_clicks_then_done():
-    """LLM returns click on first iteration, done on second — verify two LLM calls and one click."""
+    """LLM returns click on first iteration, done on second — verify two LLM calls.
+    The pre-step also clicks the check button, so _click_by_text is called twice total."""
     page = AsyncMock()
     page.frames = []
     page.screenshot = AsyncMock(return_value=b"fakepng")
@@ -419,12 +420,14 @@ async def test_navigate_smart_clicks_then_done():
     await loop._navigate_smart()
 
     assert llm.ainvoke.call_count == 2
-    loop._click_by_text.assert_awaited_once_with("Check Answer")
+    # Pre-step clicks "Check Answer" + LLM loop clicks "Check Answer" = 2 total
+    assert loop._click_by_text.await_count == 2
 
 
 @pytest.mark.asyncio
 async def test_navigate_smart_skips_missing_button():
-    """LLM returns a target not in the button list — click is skipped, loop continues."""
+    """LLM returns a target not in the button list — LLM click is skipped, loop continues.
+    The pre-step still clicks the check button deterministically (1 click total)."""
     page = AsyncMock()
     page.frames = []
     page.screenshot = AsyncMock(return_value=b"fakepng")
@@ -432,7 +435,8 @@ async def test_navigate_smart_skips_missing_button():
 
     llm = _make_llm()
     loop = QuizLoop(page, llm)
-    loop._collect_buttons = AsyncMock(return_value=["Check Answer"])
+    # Use a non-check button so the pre-step does NOT fire, keeping LLM behavior isolated
+    loop._collect_buttons = AsyncMock(return_value=["Next Question"])
     loop._click_by_text = AsyncMock(return_value=True)
 
     llm.ainvoke = AsyncMock(side_effect=[
@@ -442,6 +446,7 @@ async def test_navigate_smart_skips_missing_button():
 
     await loop._navigate_smart()
 
+    # Pre-step: no check button → no pre-click. LLM target not in list → no LLM click.
     loop._click_by_text.assert_not_awaited()
     assert llm.ainvoke.call_count == 2
 

@@ -61,12 +61,14 @@ Return:
 - reason: brief explanation of your choice
 
 PRIORITY ORDER (check each in order, pick the first that applies):
-1. If a dialog/popup is visible → click its dismiss button (OK, Close, Got it, X)
-2. If a button containing "check" is visible (e.g. "Final check", "Check Answer", "Check My Answer",
+1. If a Yes/No confirmation dialog is visible (e.g. "You haven't submitted your answer — do you want
+   to leave?") → click "No" to dismiss it and stay on the current question
+2. If any other dialog/popup is visible → click its dismiss button (OK, Close, Got it)
+3. If a button containing "check" is visible (e.g. "Final check", "Check Answer", "Check My Answer",
    "Check answer") → click it to submit the answer
-3. If a "Next", "Continue", or "Next Question" button is visible → click it
-4. If the sidebar shows question items → click the NEXT unanswered question item
-5. If a new question is already loaded → return action="done"
+4. If a "Next", "Continue", or "Next Question" button is visible → click it
+5. If the sidebar shows question items → click the NEXT unanswered question item
+6. If a new question is already loaded → return action="done"
 
 CRITICAL: target must be copied EXACTLY from the visible buttons list — including any number
 prefixes and score suffixes (e.g. "5Checkpoint 1 Key Term Quiz 6Question0/1 pt"). Do NOT
