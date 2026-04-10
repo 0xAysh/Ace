@@ -33,6 +33,7 @@ from ace.quiz.prompts import ANSWER_PROMPT, NAV_PROMPT, SCOUT_PROMPT
 console = Console()
 
 _NAV_MAX_STEPS = 8
+_NAV_SLEEP_S: float = 0.5
 
 
 class QuizLoop:
@@ -94,9 +95,6 @@ class QuizLoop:
             self._page_num = page_num + 1
             console.print(f"[dim]→ Page {self._page_num}: scanning...[/dim]")
 
-            # Dismiss any leftover dialogs from previous page
-            await self._dismiss_dialogs()
-
             # 1. Scout
             t0 = time.monotonic()
             scan = await self._scout()
@@ -117,9 +115,9 @@ class QuizLoop:
             if current_q_text == prev_question_text:
                 same_question_count += 1
                 if same_question_count >= 2:
-                    self._dbg(f"same question {same_question_count}x — trying sidebar skip")
-                    console.print("[yellow]→ Stuck on same question — skipping via sidebar[/yellow]")
-                    await self._advance_sidebar()
+                    self._dbg(f"same question {same_question_count}x — trying smart navigation")
+                    console.print("[yellow]→ Stuck on same question — trying smart navigation[/yellow]")
+                    await self._navigate_smart()
                     await asyncio.sleep(1)
                     if same_question_count >= 4:
                         console.print("[yellow]→ Cannot advance past this question — stopping[/yellow]")
@@ -155,12 +153,8 @@ class QuizLoop:
             elif verify_result.issues:
                 console.print(f"[dim]Minor issues noted (proceeding): {verify_result.issues}[/dim]")
 
-            # 5. Navigate or stop
-            if verify_result.next_action == "done":
-                console.print("[dim]→ All questions answered.[/dim]")
-                return
-
-            await self._navigate(verify_result.next_action)
+            # 5. Navigate
+            await self._navigate_smart()
 
         raise RuntimeError(f"Quiz loop exceeded {MAX_PAGES} pages without completing")
 
@@ -372,7 +366,7 @@ class QuizLoop:
             except Exception:
                 pass
 
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(_NAV_SLEEP_S)
         else:
             console.print(
                 "[yellow]Warning: navigation loop exhausted without completing — continuing[/yellow]"
@@ -636,7 +630,7 @@ class QuizLoop:
         if not has_selection:
             issues.append("no answer selected in active frame")
 
-        next_action = await self._detect_next_action()
+        next_action = "check"  # unused — _navigate_smart() handles all navigation
 
         result = VerifyResult(
             all_correct=has_selection,
@@ -646,209 +640,3 @@ class QuizLoop:
         self._dbg(f"verify result: correct={result.all_correct} next={result.next_action} issues={result.issues}")
         return result
 
-    async def _detect_next_action(self) -> str:
-        """Scan all frames for Check/Next/Done buttons (disabled buttons excluded)."""
-        check_kw = ["check answer", "check my answer", "submit answer", "try again"]
-        next_kw = ["next question", "next", "continue"]
-
-        for frame in self.page.frames:
-            try:
-                found = await frame.evaluate(
-                    """(cfg) => {
-                        const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
-                        const btns = [...document.querySelectorAll(
-                            'button:not([disabled]), [role="button"]:not([aria-disabled="true"]), input[type="submit"]:not([disabled])'
-                        )];
-                        const texts = btns.map(el => norm(el.textContent || el.value || ''));
-                        return {
-                            check: texts.some(t => cfg.c.some(n => t.includes(n))),
-                            next:  texts.some(t => cfg.n.some(n => t.includes(n))),
-                            buttons: texts.slice(0, 15),
-                        };
-                    }""",
-                    {"c": check_kw, "n": next_kw},
-                )
-                if found.get("buttons"):
-                    self._dbg(f"buttons in {frame.url[:40]}: {found['buttons'][:8]}")
-                if found["check"]:
-                    return "check"
-                if found["next"]:
-                    return "next"
-            except Exception:
-                pass
-
-        self._dbg("no check/next button found — defaulting to 'check'", style="yellow")
-        return "check"  # Default: assume check button exists (safe fallback)
-
-    async def _click_button_all_frames(self, candidates: list[str]) -> bool:
-        """Try to click a button matching any candidate text, searching all frames.
-
-        Uses exact text matching (normalized whitespace, case-insensitive) to
-        avoid false positives like "checkpoint" matching "Check".
-        """
-        self._dbg(f"searching for button: {candidates}")
-
-        active_frame = await self._active_frame()
-        frames = [active_frame]
-        for frame in self.page.frames:
-            if frame not in frames:
-                frames.append(frame)
-
-        for frame in frames:
-            # JS search with exact-match: button text must equal a candidate
-            # (not just contain it) to avoid "checkpoint" matching "Check Answer"
-            try:
-                clicked = await frame.evaluate(
-                    """(names) => {
-                        const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
-                        const targets = names.map(n => norm(n));
-                        for (const el of document.querySelectorAll(
-                            'button, [role="button"], input[type="submit"]'
-                        )) {
-                            const t = norm(el.textContent || el.value || '');
-                            // Exact match or button text starts with a candidate
-                            if (targets.some(n => t === n || t.startsWith(n))) {
-                                el.click();
-                                return t;
-                            }
-                        }
-                        return false;
-                    }""",
-                    candidates,
-                )
-                if clicked:
-                    self._dbg(f"clicked button '{clicked}' in {frame.url[:50]}")
-                    try:
-                        await self.page.wait_for_load_state("networkidle", timeout=5_000)
-                    except Exception:
-                        pass
-                    return True
-            except Exception:
-                pass
-
-        self._dbg("button not found in any frame", style="yellow")
-        return False
-
-    async def _advance_sidebar(self) -> None:
-        """Click the next question in a sidebar question list (Pearson, etc.).
-
-        Searches ALL frames since the sidebar is often in a different frame
-        than the quiz content (e.g. assignment frame vs Player frame).
-        """
-        advanced = False
-        for frame in self.page.frames:
-            try:
-                advanced = await frame.evaluate("""() => {
-                // Find list containers that look like question lists (items contain "X/Y pt")
-                for (const container of document.querySelectorAll(
-                    'ol, ul, [role="list"], [role="tablist"], nav'
-                )) {
-                    const items = [...container.querySelectorAll(
-                        'li, [role="listitem"], [role="tab"]'
-                    )];
-                    if (items.length < 2) continue;
-                    if (!items.some(i => /\\d+\\/\\d+\\s*pt/.test(i.textContent || ''))) continue;
-
-                    let selectedIdx = -1;
-                    for (let i = 0; i < items.length; i++) {
-                        const cls = (items[i].className || '').toLowerCase();
-                        if (cls.includes('selected') || cls.includes('active') ||
-                            cls.includes('current') ||
-                            items[i].getAttribute('aria-selected') === 'true' ||
-                            /\\bselected\\b/i.test(items[i].textContent || '')) {
-                            selectedIdx = i;
-                            break;
-                        }
-                    }
-
-                    // Click next item after selected
-                    if (selectedIdx >= 0 && selectedIdx + 1 < items.length) {
-                        items[selectedIdx + 1].click();
-                        return true;
-                    }
-                    // No selected item: click first un-completed item
-                    if (selectedIdx < 0) {
-                        for (const item of items) {
-                            if (/0\\/\\d+\\s*pt/.test(item.textContent || '')) {
-                                item.click();
-                                return true;
-                            }
-                        }
-                    }
-                }
-                return false;
-            }""")
-                if advanced:
-                    self._dbg(f"sidebar: advanced to next question (frame: {frame.url[:50]})")
-                    try:
-                        await self.page.wait_for_load_state("networkidle", timeout=5_000)
-                    except Exception:
-                        await asyncio.sleep(1)
-                    return
-            except Exception:
-                continue
-        self._dbg("sidebar: no next question found in any frame")
-
-    async def _dismiss_dialogs(self) -> None:
-        """Dismiss any modal dialog (Pearson 'That's incorrect' / 'Correct' popups).
-
-        Searches all frames for OK/Close/Got it/Continue buttons inside dialogs.
-        """
-        for frame in self.page.frames:
-            try:
-                dismissed = await frame.evaluate("""() => {
-                    const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
-                    // Look for modal/dialog containers first
-                    const modals = document.querySelectorAll(
-                        '[role="dialog"], [role="alertdialog"], .modal, .dialog, ' +
-                        '[class*="modal"], [class*="dialog"], [class*="popup"], ' +
-                        '[class*="overlay"]'
-                    );
-                    // Also search the whole document (some popups aren't marked as dialogs)
-                    const candidates = ['ok', 'close', 'got it', 'continue', 'dismiss', 'x'];
-                    const allButtons = document.querySelectorAll(
-                        'button, [role="button"], input[type="button"]'
-                    );
-                    for (const btn of allButtons) {
-                        const t = norm(btn.textContent || btn.value || '');
-                        const aria = norm(btn.getAttribute('aria-label') || '');
-                        if (candidates.some(c => t === c || aria === c)) {
-                            btn.click();
-                            return t || aria;
-                        }
-                    }
-                    // Also try clicking X / close icon buttons (often just "×" or empty with aria-label)
-                    for (const btn of allButtons) {
-                        const t = (btn.textContent || '').trim();
-                        if (t === '×' || t === 'X' || t === '✕') {
-                            btn.click();
-                            return 'close-icon';
-                        }
-                    }
-                    return false;
-                }""")
-                if dismissed:
-                    self._dbg(f"dismissed dialog: '{dismissed}' in {frame.url[:50]}")
-                    await asyncio.sleep(0.5)
-                    return
-            except Exception:
-                continue
-
-    async def _navigate(self, action: str) -> None:
-        self._dbg(f"navigate: action={action}")
-        if action == "check":
-            candidates = ["Check answer", "Check Answer", "Check My Answer", "Submit Answer", "Try again", "Try Again"]
-            clicked = await self._click_button_all_frames(candidates)
-            if clicked:
-                await asyncio.sleep(1.5)  # Wait for Pearson feedback animation
-                await self._dismiss_dialogs()  # Handle "That's incorrect" / "Correct" popups
-                await self._save_screenshot("after-check")
-                await self._advance_sidebar()
-            else:
-                console.print("[yellow]Warning: could not find 'check' button[/yellow]")
-        elif action == "next":
-            candidates = ["Next Question", "Next", "Continue", "Next >"]
-            clicked = await self._click_button_all_frames(candidates)
-            if not clicked:
-                # Fallback: sidebar navigation (Pearson has no Next button)
-                await self._advance_sidebar()

@@ -1,4 +1,4 @@
-"""Pydantic models for LLM-structured I/O: scout (PageScan), answer (AnswerPlan), verify (VerifyResult)."""
+"""Pydantic models for LLM-structured I/O: scout (PageScan), answer (AnswerPlan), verify (VerifyResult), navigate (NavAction)."""
 from typing import Literal
 from pydantic import BaseModel
 

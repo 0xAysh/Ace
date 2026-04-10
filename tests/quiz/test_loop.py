@@ -139,7 +139,6 @@ async def test_verify_detects_checked_radio():
     loop = QuizLoop(page, MagicMock())
     loop._active_frame = AsyncMock(return_value=player_frame)
     player_frame.evaluate = AsyncMock(return_value={"rc": 1, "cc": 0, "tf": 0})
-    loop._detect_next_action = AsyncMock(return_value="check")
 
     result = await loop._verify()
 
@@ -154,27 +153,12 @@ async def test_verify_detects_no_selection():
     loop = QuizLoop(page, MagicMock())
     loop._active_frame = AsyncMock(return_value=player_frame)
     player_frame.evaluate = AsyncMock(return_value={"rc": 0, "cc": 0, "tf": 0})
-    loop._detect_next_action = AsyncMock(return_value="check")
 
     result = await loop._verify()
 
     assert result.all_correct is False
     assert len(result.issues) == 1
 
-
-@pytest.mark.asyncio
-async def test_navigate_next_clicks_button():
-    page, main_frame, player_frame = _make_page_with_frame(player_input_count=4)
-    loop = QuizLoop(page, MagicMock())
-
-    # _click_button_all_frames uses JS evaluate to find and click buttons
-    loop._active_frame = AsyncMock(return_value=player_frame)
-    # JS button search returns matched button text on success
-    player_frame.evaluate = AsyncMock(return_value="next")
-
-    await loop._navigate("next")
-
-    player_frame.evaluate.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -205,7 +189,7 @@ async def test_run_completes_single_question():
     loop._active_frame = AsyncMock(return_value=player_frame)
     loop._click_option = AsyncMock()
     loop._verify = AsyncMock(return_value=VerifyResult(all_correct=True, issues=[], next_action="check"))
-    loop._navigate = AsyncMock()
+    loop._navigate_smart = AsyncMock()
 
     await loop.run()
 
@@ -479,6 +463,7 @@ async def test_navigate_smart_exhausts_cap():
         NavAction(action="click", target="Next", reason="keep going")
     ))
 
-    await loop._navigate_smart()  # must not raise
+    with patch("ace.quiz.loop._NAV_SLEEP_S", 0.0):
+        await loop._navigate_smart()  # must not raise
 
     assert llm.ainvoke.call_count == 8
