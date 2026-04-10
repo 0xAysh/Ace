@@ -27,10 +27,12 @@ from browser_use.llm.messages import (
     UserMessage,
 )
 
-from ace.quiz.models import Answer, AnswerPlan, PageScan, Question, VerifyResult
-from ace.quiz.prompts import ANSWER_PROMPT, SCOUT_PROMPT
+from ace.quiz.models import Answer, AnswerPlan, NavAction, PageScan, Question, VerifyResult
+from ace.quiz.prompts import ANSWER_PROMPT, NAV_PROMPT, SCOUT_PROMPT
 
 console = Console()
+
+_NAV_MAX_STEPS = 8
 
 
 class QuizLoop:
@@ -302,6 +304,79 @@ class QuizLoop:
                 continue
         self._dbg(f"_click_by_text: '{target}' not found in any frame", style="yellow")
         return False
+
+    async def _navigate_smart(self) -> None:
+        """LLM micro-loop: screenshot + visible buttons → click → repeat until done.
+
+        Each iteration: take screenshot, collect all visible button labels from all
+        frames, ask LLM what to click. LLM returns NavAction(action="click", target=...)
+        or NavAction(action="done"). Loop exits on "done" or after _NAV_MAX_STEPS.
+        """
+        for step in range(_NAV_MAX_STEPS):
+            b64 = await self._screenshot_b64()
+            buttons = await self._collect_buttons()
+
+            self._dbg(f"[NAV step {step + 1}/{_NAV_MAX_STEPS}] buttons: {buttons}")
+
+            if not buttons:
+                self._dbg("[NAV] no buttons found — treating as done")
+                break
+
+            try:
+                messages = [
+                    SystemMessage(content=NAV_PROMPT),
+                    UserMessage(content=[
+                        ContentPartTextParam(
+                            text="Visible buttons:\n" + "\n".join(f"- {b}" for b in buttons)
+                        ),
+                        ContentPartImageParam(
+                            image_url=ImageURL(
+                                url=f"data:image/png;base64,{b64}", detail="high"
+                            )
+                        ),
+                    ]),
+                ]
+                result = await self.llm.ainvoke(messages, output_format=NavAction)
+                nav = result.completion
+            except Exception as e:
+                self._dbg(f"[NAV] LLM parse failed: {e} — treating as done", style="yellow")
+                break
+
+            self._dbg(
+                f"[NAV] action={nav.action}  target={nav.target!r}  reason={nav.reason}"
+            )
+
+            if self.debug:
+                self._dbg_panel(
+                    f"NAV step {step + 1}",
+                    f"buttons: {buttons}\n"
+                    f"action={nav.action}  target={nav.target!r}\n"
+                    f"reason={nav.reason}",
+                    border="magenta",
+                )
+
+            if nav.action == "done":
+                break
+
+            if nav.target is None or nav.target not in buttons:
+                console.print(
+                    f"[yellow]Warning: LLM nav target '{nav.target}' not in button list — skipping[/yellow]"
+                )
+                continue
+
+            success = await self._click_by_text(nav.target)
+            self._dbg(f"[NAV] click result: {success}")
+
+            try:
+                await self.page.wait_for_load_state("domcontentloaded", timeout=3_000)
+            except Exception:
+                pass
+
+            await asyncio.sleep(0.5)
+        else:
+            console.print(
+                "[yellow]Warning: navigation loop exhausted without completing — continuing[/yellow]"
+            )
 
     def _parse_option_letter(self, option_text: str) -> str | None:
         """Extract uppercase letter from 'A. foo' → 'A', or None for 'True'."""

@@ -3,7 +3,7 @@ import base64
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from ace.quiz.models import PageScan, Question, AnswerPlan, Answer, VerifyResult
+from ace.quiz.models import PageScan, Question, AnswerPlan, Answer, VerifyResult, NavAction
 from ace.quiz.loop import QuizLoop
 
 
@@ -412,3 +412,73 @@ async def test_click_by_text_tries_all_frames():
     assert result is True
     frame1.evaluate.assert_awaited_once()
     frame2.evaluate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_navigate_smart_clicks_then_done():
+    """LLM returns click on first iteration, done on second — verify two LLM calls and one click."""
+    page = AsyncMock()
+    page.frames = []
+    page.screenshot = AsyncMock(return_value=b"fakepng")
+    page.wait_for_load_state = AsyncMock()
+
+    llm = _make_llm()
+    loop = QuizLoop(page, llm)
+    loop._collect_buttons = AsyncMock(return_value=["Check Answer", "Skip"])
+    loop._click_by_text = AsyncMock(return_value=True)
+
+    llm.ainvoke = AsyncMock(side_effect=[
+        _completion(NavAction(action="click", target="Check Answer", reason="check answer visible")),
+        _completion(NavAction(action="done", target=None, reason="new question loaded")),
+    ])
+
+    await loop._navigate_smart()
+
+    assert llm.ainvoke.call_count == 2
+    loop._click_by_text.assert_awaited_once_with("Check Answer")
+
+
+@pytest.mark.asyncio
+async def test_navigate_smart_skips_missing_button():
+    """LLM returns a target not in the button list — click is skipped, loop continues."""
+    page = AsyncMock()
+    page.frames = []
+    page.screenshot = AsyncMock(return_value=b"fakepng")
+    page.wait_for_load_state = AsyncMock()
+
+    llm = _make_llm()
+    loop = QuizLoop(page, llm)
+    loop._collect_buttons = AsyncMock(return_value=["Check Answer"])
+    loop._click_by_text = AsyncMock(return_value=True)
+
+    llm.ainvoke = AsyncMock(side_effect=[
+        _completion(NavAction(action="click", target="Nonexistent Button", reason="hallucinated")),
+        _completion(NavAction(action="done", target=None, reason="done")),
+    ])
+
+    await loop._navigate_smart()
+
+    loop._click_by_text.assert_not_awaited()
+    assert llm.ainvoke.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_navigate_smart_exhausts_cap():
+    """LLM never returns done — loop stops after 8 iterations without raising."""
+    page = AsyncMock()
+    page.frames = []
+    page.screenshot = AsyncMock(return_value=b"fakepng")
+    page.wait_for_load_state = AsyncMock()
+
+    llm = _make_llm()
+    loop = QuizLoop(page, llm)
+    loop._collect_buttons = AsyncMock(return_value=["Next"])
+    loop._click_by_text = AsyncMock(return_value=True)
+
+    llm.ainvoke = AsyncMock(return_value=_completion(
+        NavAction(action="click", target="Next", reason="keep going")
+    ))
+
+    await loop._navigate_smart()  # must not raise
+
+    assert llm.ainvoke.call_count == 8
