@@ -427,7 +427,7 @@ async def test_navigate_smart_clicks_then_done():
 @pytest.mark.asyncio
 async def test_navigate_smart_skips_missing_button():
     """LLM returns a target not in the button list — LLM click is skipped, loop continues.
-    The pre-step still clicks the check button deterministically (1 click total)."""
+    Uses buttons that trigger neither pre-step (no 'check', no 'next'/'continue')."""
     page = AsyncMock()
     page.frames = []
     page.screenshot = AsyncMock(return_value=b"fakepng")
@@ -435,8 +435,8 @@ async def test_navigate_smart_skips_missing_button():
 
     llm = _make_llm()
     loop = QuizLoop(page, llm)
-    # Use a non-check button so the pre-step does NOT fire, keeping LLM behavior isolated
-    loop._collect_buttons = AsyncMock(return_value=["Next Question"])
+    # Buttons with no "check" (pre-step 1) and no "next"/"continue" (pre-step 2)
+    loop._collect_buttons = AsyncMock(return_value=["Resume", "Skip"])
     loop._click_by_text = AsyncMock(return_value=True)
 
     llm.ainvoke = AsyncMock(side_effect=[
@@ -446,14 +446,15 @@ async def test_navigate_smart_skips_missing_button():
 
     await loop._navigate_smart()
 
-    # Pre-step: no check button → no pre-click. LLM target not in list → no LLM click.
+    # Neither pre-step fires; LLM target not in list → no click at all.
     loop._click_by_text.assert_not_awaited()
     assert llm.ainvoke.call_count == 2
 
 
 @pytest.mark.asyncio
-async def test_navigate_smart_exhausts_cap():
-    """LLM never returns done — loop stops after 8 iterations without raising."""
+async def test_navigate_smart_next_button_returns_early():
+    """Pre-step 2: if a 'Next question' button is visible after checking, click it and return
+    without entering the LLM loop."""
     page = AsyncMock()
     page.frames = []
     page.screenshot = AsyncMock(return_value=b"fakepng")
@@ -461,11 +462,35 @@ async def test_navigate_smart_exhausts_cap():
 
     llm = _make_llm()
     loop = QuizLoop(page, llm)
-    loop._collect_buttons = AsyncMock(return_value=["Next"])
+    # "Final check" fires pre-step 1; "Next question" fires pre-step 2 → returns early
+    loop._collect_buttons = AsyncMock(return_value=["Final check", "Next question"])
+    loop._click_by_text = AsyncMock(return_value=True)
+    llm.ainvoke = AsyncMock()  # should never be called
+
+    with patch("ace.quiz.loop._NAV_SLEEP_S", 0.0):
+        await loop._navigate_smart()
+
+    # pre-step 1 clicks "Final check", pre-step 2 clicks "Next question"
+    assert loop._click_by_text.await_count == 2
+    llm.ainvoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_navigate_smart_exhausts_cap():
+    """LLM never returns done — loop stops after 8 iterations without raising.
+    Uses buttons without 'check', 'next', or 'continue' so neither pre-step fires."""
+    page = AsyncMock()
+    page.frames = []
+    page.screenshot = AsyncMock(return_value=b"fakepng")
+    page.wait_for_load_state = AsyncMock()
+
+    llm = _make_llm()
+    loop = QuizLoop(page, llm)
+    loop._collect_buttons = AsyncMock(return_value=["Resume", "Skip"])
     loop._click_by_text = AsyncMock(return_value=True)
 
     llm.ainvoke = AsyncMock(return_value=_completion(
-        NavAction(action="click", target="Next", reason="keep going")
+        NavAction(action="click", target="Resume", reason="keep going")
     ))
 
     with patch("ace.quiz.loop._NAV_SLEEP_S", 0.0):

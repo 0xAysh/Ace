@@ -312,19 +312,38 @@ class QuizLoop:
         frames, ask LLM what to click. LLM returns NavAction(action="click", target=...)
         or NavAction(action="done"). Loop exits on "done" or after _NAV_MAX_STEPS.
         """
-        # Deterministic pre-step: always click a "check" button first if one is visible.
-        # This avoids relying on the LLM to follow priority order — Pearson's "Final check"
-        # must be clicked before navigating away or it triggers a Yes/No abandon dialog.
+        # Deterministic pre-step 1: click any "check" button first if one is visible.
+        # Pearson's "Final check" must be clicked before navigating away or it triggers
+        # a Yes/No abandon confirmation dialog.
         pre_buttons = await self._collect_buttons()
         check_btn = next(
             (b for b in pre_buttons if re.search(r"\bcheck\b", b, re.IGNORECASE)),
             None,
         )
         if check_btn:
-            self._dbg(f"[NAV pre-step] clicking check button: '{check_btn}'")
+            self._dbg(f"[NAV pre-step 1] clicking check button: '{check_btn}'")
             console.print(f"[dim]→ Checking answer: {check_btn}[/dim]")
             await self._click_by_text(check_btn)
             await asyncio.sleep(1.5)
+
+        # Deterministic pre-step 2: click "Next"/"Continue" button if visible.
+        # After checking, platforms typically show a "Next question" / "Next" / "Continue"
+        # button to advance. Click it deterministically and return — the outer scout cycle
+        # will pick up the new question. Only short labels match to avoid sidebar items.
+        post_buttons = await self._collect_buttons()
+        next_btn = next(
+            (
+                b for b in post_buttons
+                if re.search(r"\bnext\b|\bcontinue\b", b, re.IGNORECASE) and len(b) <= 30
+            ),
+            None,
+        )
+        if next_btn:
+            self._dbg(f"[NAV pre-step 2] clicking next: '{next_btn}'")
+            console.print(f"[dim]→ Next: {next_btn}[/dim]")
+            await self._click_by_text(next_btn)
+            await asyncio.sleep(1.0)
+            return  # outer scout cycle handles the new question
 
         for step in range(_NAV_MAX_STEPS):
             b64 = await self._screenshot_b64()
