@@ -57,15 +57,20 @@ Your task: determine what to click to advance to the next question.
 Return:
 - action: "click" to click a button, or "done" if a new question is already visible
   or no further navigation is needed
-- target: the EXACT button label from the visible buttons list (required when action="click")
+- target: copy the EXACT button label text from the visible buttons list — character for character
 - reason: brief explanation of your choice
 
-Rules:
-- target MUST be exactly one of the visible button labels provided — do not invent labels
-- If a feedback dialog or popup is visible (e.g. "That's incorrect"), dismiss it first (OK, Close, Got it)
-- After dismissing, click a Check / Submit answer button if visible
-- After checking, click Next / Continue to advance to the next question
-- Use sidebar navigation links if visible and no Next button is present
-- Return action="done" only when a new unanswered question is already visible on screen
-- Do NOT click final quiz submission buttons (Submit Quiz, Finish Quiz, Turn in)
+PRIORITY ORDER (check each in order, pick the first that applies):
+1. If a dialog/popup is visible → click its dismiss button (OK, Close, Got it, X)
+2. If a button containing "check" is visible (e.g. "Final check", "Check Answer", "Check My Answer",
+   "Check answer") → click it to submit the answer
+3. If a "Next", "Continue", or "Next Question" button is visible → click it
+4. If the sidebar shows question items → click the NEXT unanswered question item
+5. If a new question is already loaded → return action="done"
+
+CRITICAL: target must be copied EXACTLY from the visible buttons list — including any number
+prefixes and score suffixes (e.g. "5Checkpoint 1 Key Term Quiz 6Question0/1 pt"). Do NOT
+shorten, paraphrase, or reconstruct the label. Paste it verbatim.
+
+Do NOT click final quiz submission buttons (Submit Quiz, Finish Quiz, Turn in).
 """

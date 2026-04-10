@@ -265,37 +265,43 @@ class QuizLoop:
         return results
 
     async def _click_by_text(self, target: str) -> bool:
-        """Click the first button whose text exactly matches target (case-insensitive).
+        """Click the first button whose text matches target (case-insensitive).
 
-        Searches all frames. Returns True on first match, False if not found anywhere.
+        Pass 1: exact match. Pass 2 (fallback): button label contains the target
+        text — handles LLM stripping numeric prefixes from sidebar items.
+        Searches all frames. Returns True on first match, False if not found.
         """
-        for frame in self.page.frames:
-            try:
-                clicked = await frame.evaluate(
-                    """(target) => {
-                    const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
-                    const t = norm(target);
-                    for (const el of document.querySelectorAll(
-                        'button, [role="button"], input[type="submit"],'
-                        + ' input[type="button"], a[role="button"]'
-                    )) {
-                        const label = norm(
-                            el.textContent || el.value || el.getAttribute('aria-label') || ''
-                        );
-                        if (label === t) {
-                            el.click();
-                            return true;
-                        }
-                    }
-                    return false;
-                }""",
-                    target,
-                )
-                if clicked:
-                    self._dbg(f"clicked '{target}' in {frame.url[:60]}")
-                    return True
-            except Exception:
-                continue
+        _JS = """(cfg) => {
+            const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
+            const t = norm(cfg.target);
+            const fuzzy = cfg.fuzzy;
+            for (const el of document.querySelectorAll(
+                'button, [role="button"], input[type="submit"],'
+                + ' input[type="button"], a[role="button"]'
+            )) {
+                const label = norm(
+                    el.textContent || el.value || el.getAttribute('aria-label') || ''
+                );
+                const match = fuzzy ? label.includes(t) : label === t;
+                if (match && t.length >= (fuzzy ? 8 : 1)) {
+                    el.click();
+                    return label;
+                }
+            }
+            return false;
+        }"""
+        for fuzzy in (False, True):
+            for frame in self.page.frames:
+                try:
+                    result = await frame.evaluate(_JS, {"target": target, "fuzzy": fuzzy})
+                    if result:
+                        self._dbg(
+                            f"clicked '{target}' (fuzzy={fuzzy}) → matched '{result}' "
+                            f"in {frame.url[:60]}"
+                        )
+                        return True
+                except Exception:
+                    continue
         self._dbg(f"_click_by_text: '{target}' not found in any frame", style="yellow")
         return False
 
