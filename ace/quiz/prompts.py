@@ -46,3 +46,26 @@ Return:
   - "next" if a Next / Next Question / Continue button is visible
   - "done" if a Submit / Finish / Done button is visible AND all visible questions appear correctly answered
 """
+
+NAV_PROMPT = """\
+You are navigating a quiz page. An answer was just selected.
+
+You are given a screenshot of the current page and a list of visible buttons.
+
+Your task: determine what to click to advance to the next question.
+
+Return:
+- action: "click" to click a button, or "done" if a new question is already visible
+  or no further navigation is needed
+- target: the EXACT button label from the visible buttons list (required when action="click")
+- reason: brief explanation of your choice
+
+Rules:
+- target MUST be exactly one of the visible button labels provided — do not invent labels
+- If a feedback dialog or popup is visible (e.g. "That's incorrect"), dismiss it first (OK, Close, Got it)
+- After dismissing, click a Check / Submit answer button if visible
+- After checking, click Next / Continue to advance to the next question
+- Use sidebar navigation links if visible and no Next button is present
+- Return action="done" only when a new unanswered question is already visible on screen
+- Do NOT click final quiz submission buttons (Submit Quiz, Finish Quiz, Turn in)
+"""

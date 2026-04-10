@@ -30,3 +30,9 @@ class VerifyResult(BaseModel):
     all_correct: bool
     issues: list[str]
     next_action: Literal["check", "next", "done"]
+
+
+class NavAction(BaseModel):
+    action: Literal["click", "done"]
+    target: str | None = None  # exact button label from _collect_buttons(); None when action="done"
+    reason: str                 # shown in debug output
