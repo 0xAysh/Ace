@@ -11,9 +11,13 @@ Playwright handles all clicking.
 import asyncio
 import base64
 import re
+import time
+from pathlib import Path
 
 from playwright.async_api import Page
 from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
 
 from browser_use.llm.messages import (
     ContentPartImageParam,
@@ -30,19 +34,72 @@ console = Console()
 
 
 class QuizLoop:
-    def __init__(self, page: Page, llm) -> None:
+    def __init__(self, page: Page, llm, debug: bool = False) -> None:
         self.page = page
         self.llm = llm
+        self.debug = debug
+        self._session_dir: Path | None = None
+        self._page_num = 0
+
+    def _dbg(self, msg: str, style: str = "dim cyan") -> None:
+        if self.debug:
+            console.print(f"  [{style}]DBG {msg}[/{style}]")
+
+    def _dbg_panel(self, title: str, content: str, border: str = "dim cyan") -> None:
+        if self.debug:
+            console.print(Panel(
+                Text(content[:2000], style="dim"),
+                title=f"[bold]{title}[/bold]",
+                border_style=border,
+                expand=False,
+            ))
+
+    def _session_path(self) -> Path:
+        if self._session_dir is None:
+            from ace.config import SESSIONS_DIR
+            SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+            self._session_dir = SESSIONS_DIR / f"debug-{int(time.time())}"
+            self._session_dir.mkdir(exist_ok=True)
+            self._dbg(f"session dir: {self._session_dir}")
+        return self._session_dir
+
+    async def _save_screenshot(self, label: str) -> str | None:
+        if not self.debug:
+            return None
+        try:
+            path = self._session_path() / f"p{self._page_num}-{label}.png"
+            await self.page.screenshot(path=str(path), full_page=True)
+            self._dbg(f"screenshot saved: {path.name}")
+            return str(path)
+        except Exception as e:
+            self._dbg(f"screenshot failed: {e}", style="yellow")
+            return None
 
     async def run(self) -> None:
         """Main loop. Runs until verify returns next_action='done'."""
         MAX_PAGES = 100  # safety cap
 
+        if self.debug:
+            console.print(Panel(
+                "[bold]Debug mode ON[/bold] — logging LLM I/O, DOM state, click results",
+                border_style="cyan",
+            ))
+
+        prev_question_text: str | None = None
+        same_question_count = 0
+
         for page_num in range(MAX_PAGES):
-            console.print(f"[dim]→ Page {page_num + 1}: scanning...[/dim]")
+            self._page_num = page_num + 1
+            console.print(f"[dim]→ Page {self._page_num}: scanning...[/dim]")
+
+            # Dismiss any leftover dialogs from previous page
+            await self._dismiss_dialogs()
 
             # 1. Scout
+            t0 = time.monotonic()
             scan = await self._scout()
+            self._dbg(f"scout took {time.monotonic() - t0:.1f}s")
+
             if not scan.questions:
                 console.print("[bold green]→ No more questions found — done.[/bold green]")
                 return
@@ -53,18 +110,36 @@ class QuizLoop:
                 f"{len(scan.questions)} question(s)[/dim]"
             )
 
+            # Detect stuck on same question (already answered or can't advance)
+            current_q_text = scan.questions[0].text[:100] if scan.questions else ""
+            if current_q_text == prev_question_text:
+                same_question_count += 1
+                if same_question_count >= 2:
+                    self._dbg(f"same question {same_question_count}x — trying sidebar skip")
+                    console.print("[yellow]→ Stuck on same question — skipping via sidebar[/yellow]")
+                    await self._advance_sidebar()
+                    await asyncio.sleep(1)
+                    if same_question_count >= 4:
+                        console.print("[yellow]→ Cannot advance past this question — stopping[/yellow]")
+                        return
+                    continue
+            else:
+                same_question_count = 0
+                prev_question_text = current_q_text
+
             # 2. Answer
             questions_to_answer = scan.questions
+            t0 = time.monotonic()
             answer_plan = await self._answer(questions_to_answer)
+            self._dbg(f"answer took {time.monotonic() - t0:.1f}s")
 
             # 3. Select
             await self._select(answer_plan, questions_to_answer)
 
             # 4. Verify (with retry)
+            await self._save_screenshot("after-select")
             verify_result = await self._verify()
             retries = 0
-            # Retry re-selects the same answers (click failures, not reasoning errors).
-            # If the answer plan itself is wrong, manual review is needed.
             while not verify_result.all_correct and retries < 2:
                 console.print(
                     f"[yellow]Verify found issues: {verify_result.issues}. Retrying...[/yellow]"
@@ -94,11 +169,13 @@ class QuizLoop:
         return base64.b64encode(data).decode()
 
     async def _page_text(self) -> str:
-        """Extract body text from the active frame.
+        """Extract body text from the frame with the most content.
 
-        Falls back to the top-level page body if the active frame returns
-        fewer than 200 chars (e.g. it only contains sidebar navigation).
+        Tries the active frame first, then scans ALL frames and picks the
+        one with the longest body text. This ensures we get the actual quiz
+        content even when it's buried in a nested iframe (Pearson Player).
         """
+        # Try active frame first
         frame = await self._active_frame()
         try:
             text = await frame.inner_text("body")
@@ -106,29 +183,90 @@ class QuizLoop:
                 return text
         except Exception:
             pass
-        # Sparse active frame — fall back to main page body
+
+        # Scan all frames for the richest content
+        best_text = ""
+        for f in self.page.frames:
+            try:
+                t = await f.inner_text("body")
+                if len(t) > len(best_text):
+                    best_text = t
+                    self._dbg(f"text from {f.url[:50]}: {len(t)} chars")
+            except Exception:
+                continue
+
+        if best_text:
+            return best_text
+
+        # Last resort: top-level page
         try:
             return await self.page.inner_text("body")
         except Exception:
             return ""
 
     async def _active_frame(self):
-        """Return the frame with the most interactive inputs, or main_frame if none."""
+        """Return the frame with the most quiz-relevant inputs, or main_frame if none.
+
+        Excludes cookie-consent inputs (OneTrust ot-group-id-*), hidden inputs,
+        and other non-quiz elements to avoid picking the wrong frame on Pearson.
+        """
         best_frame = self.page.main_frame
         best_count = 0
         for frame in self.page.frames:
             try:
                 count = await frame.evaluate(
-                    "() => document.querySelectorAll("
-                    "'input[type=\"radio\"], input[type=\"checkbox\"],"
-                    " input[type=\"text\"], textarea').length"
+                    """() => {
+                        // Count quiz-relevant inputs only
+                        let n = 0;
+                        for (const el of document.querySelectorAll(
+                            'input[type="radio"], input[type="checkbox"],'
+                            + ' input[type="text"], textarea,'
+                            + ' [role="radio"], [role="checkbox"], [role="option"]'
+                        )) {
+                            // Skip cookie-consent / tracking inputs (OneTrust etc.)
+                            const name = el.name || '';
+                            if (name.startsWith('ot-group-id')) continue;
+                            // Skip hidden inputs (not quiz-relevant)
+                            if (el.type === 'hidden') continue;
+                            n++;
+                        }
+                        return n;
+                    }"""
                 )
                 if count > best_count:
+                    self._dbg(f"frame candidate: {frame.url[:60]} quiz-inputs={count}")
                     best_count = count
                     best_frame = frame
             except Exception:
                 pass
+        if best_count == 0:
+            self._dbg("no quiz inputs in any frame — using main_frame")
+        else:
+            self._dbg(f"active frame: {best_frame.url[:60]} ({best_count} quiz-inputs)")
         return best_frame
+
+    async def _collect_buttons(self) -> list[str]:
+        """Collect visible button labels from all frames, deduplicating across frames."""
+        seen: set[str] = set()
+        results: list[str] = []
+        for frame in self.page.frames:
+            try:
+                texts = await frame.evaluate(
+                    """() => Array.from(document.querySelectorAll(
+                        'button, [role="button"], input[type="submit"],'
+                        + ' input[type="button"], a[role="button"]'
+                    ))
+                    .filter(el => el.offsetParent !== null && !el.disabled)
+                    .map(el => (el.textContent || el.value || el.getAttribute('aria-label') || '').trim())
+                    .filter(t => t.length > 0)"""
+                )
+                for t in (texts or []):
+                    if t not in seen:
+                        seen.add(t)
+                        results.append(t)
+            except Exception:
+                continue
+        return results
 
     def _parse_option_letter(self, option_text: str) -> str | None:
         """Extract uppercase letter from 'A. foo' → 'A', or None for 'True'."""
@@ -136,8 +274,13 @@ class QuizLoop:
         return m.group(1).upper() if m else None
 
     async def _scout(self) -> PageScan:
+        await self._save_screenshot("scout")
         b64 = await self._screenshot_b64()
         text = await self._page_text()
+
+        self._dbg(f"page text length: {len(text)} chars")
+        self._dbg_panel("Page text (first 500 chars)", text[:500])
+
         messages = [
             SystemMessage(content=SCOUT_PROMPT),
             UserMessage(content=[
@@ -148,19 +291,45 @@ class QuizLoop:
             ]),
         ]
         result = await self.llm.ainvoke(messages, output_format=PageScan)
-        return result.completion
+        scan = result.completion
+
+        if self.debug:
+            self._dbg_panel("Scout response", (
+                f"platform:   {scan.platform}\n"
+                f"all_on_page: {scan.all_on_page}\n"
+                f"has_check:  {scan.has_check_button}\n"
+                f"questions:  {len(scan.questions)}\n"
+                + "\n".join(
+                    f"  [{q.id}] ({q.kind}) {q.text[:80]}\n"
+                    f"    options: {q.options}"
+                    for q in scan.questions
+                )
+            ), border="green")
+
+        return scan
 
     async def _answer(self, questions: list[Question]) -> AnswerPlan:
         questions_text = "\n\n".join(
             f"[{q.id}] {q.text}\nOptions: {', '.join(q.options) if q.options else '(free text)'}"
             for q in questions
         )
+
+        self._dbg_panel("Answer prompt (questions)", questions_text)
+
         messages = [
             SystemMessage(content=ANSWER_PROMPT),
             UserMessage(content=f"Answer these questions:\n\n{questions_text}"),
         ]
         result = await self.llm.ainvoke(messages, output_format=AnswerPlan)
-        return result.completion
+        plan = result.completion
+
+        if self.debug:
+            self._dbg_panel("Answer plan", "\n".join(
+                f"  {a.question_id} → {a.value}"
+                for a in plan.answers
+            ), border="green")
+
+        return plan
 
     # ── Browser interactions ───────────────────────────────────────────────────
 
@@ -169,7 +338,9 @@ class QuizLoop:
         for ans in plan.answers:
             question = q_map.get(ans.question_id)
             if question is None:
+                self._dbg(f"skip {ans.question_id}: not in question map", style="yellow")
                 continue
+            self._dbg(f"selecting {ans.question_id} ({question.kind}): {ans.value}")
             if question.kind in ("mcq", "truefalse"):
                 await self._click_option(ans.value if isinstance(ans.value, str) else ans.value[0])
             elif question.kind == "multi":
@@ -178,13 +349,16 @@ class QuizLoop:
                     await self._click_option(v)
             elif question.kind == "text":
                 await self._fill_text(ans.value if isinstance(ans.value, str) else ans.value[0])
+        # Brief pause for framework state to settle after all clicks
+        await asyncio.sleep(0.3)
 
     async def _click_option(self, option_text: str) -> None:
         """Click a radio/checkbox option.
 
         Stage 1: parse the letter prefix (e.g. 'D') and click the Nth
-        input[type=radio/checkbox] in the active frame — immune to text
-        formatting differences (whitespace, encoding, double spaces).
+        answer option's visible container in the active frame. Finds the
+        input, then clicks the closest interactive ancestor (label, li, div)
+        so framework event handlers (Angular/React) fire properly.
 
         Stage 2 (fallback): JS normalized-text search in the active frame.
         Used for options without a letter prefix (e.g. 'True', 'False').
@@ -194,54 +368,92 @@ class QuizLoop:
 
         if letter:
             index = ord(letter) - ord('A')
-            # Use JS click — bypasses Playwright actionability checks (hidden inputs)
+            self._dbg(f"click strategy: index-based (letter={letter}, index={index})")
             try:
-                clicked = await frame.evaluate(
+                result = await frame.evaluate(
                     """(index) => {
-                        const inputs = document.querySelectorAll(
+                        const inputs = [...document.querySelectorAll(
                             'input[type="radio"], input[type="checkbox"]'
+                        )].filter(el => !el.name.startsWith('ot-group-id') && el.type !== 'hidden');
+                        if (!inputs[index]) return { clicked: false, reason: 'no input at index ' + index, total: inputs.length };
+                        const inp = inputs[index];
+
+                        // Find the closest visible clickable ancestor — this is
+                        // what framework UIs (Pearson, Canvas) bind their handlers to.
+                        const container = inp.closest(
+                            'label, li, [role="radio"], [role="option"], ' +
+                            'div[class*="answer"], div[class*="choice"], div[class*="option"], ' +
+                            'div[class*="Answer"], div[class*="Choice"], div[class*="Option"]'
                         );
-                        if (inputs[index]) {
-                            inputs[index].click();
-                            // Also click the parent label if present (custom styled UIs)
-                            const label = inputs[index].closest('label') ||
-                                          document.querySelector('label[for="' + inputs[index].id + '"]');
-                            if (label) label.click();
-                            return true;
+
+                        let clickTarget;
+                        if (container && container !== document.body) {
+                            container.click();
+                            clickTarget = container.tagName + (container.className ? '.' + container.className.split(' ')[0] : '');
+                        } else {
+                            inp.click();
+                            clickTarget = 'input-direct';
                         }
-                        return false;
+
+                        // Ensure framework picks up the change
+                        inp.checked = true;
+                        inp.dispatchEvent(new Event('change', { bubbles: true }));
+                        inp.dispatchEvent(new Event('input', { bubbles: true }));
+                        return { clicked: true, target: clickTarget, total: inputs.length };
                     }""",
                     index,
                 )
-                if clicked:
+                if isinstance(result, dict):
+                    self._dbg(f"click result: {result}")
+                    if result.get("clicked"):
+                        return
+                elif result:
                     return
-            except Exception:
-                pass
+            except Exception as e:
+                self._dbg(f"index click error: {e}", style="yellow")
 
         # JS fallback: normalize whitespace, search labels/roles in active frame
+        self._dbg(f"click strategy: text-search ('{option_text[:40]}')")
         try:
-            clicked = await frame.evaluate(
+            result = await frame.evaluate(
                 """(text) => {
                     const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
                     const target = norm(text);
-                    const sels = ['label', '[role="radio"]', '[role="checkbox"]',
-                                  '[role="option"]', 'li'];
+                    // Strip letter prefix for matching (e.g. "A. fork" → "fork")
+                    const stripped = target.replace(/^[a-z]\\.\\s*/, '');
+                    const sels = [
+                        'label', '[role="radio"]', '[role="checkbox"]',
+                        '[role="option"]', 'li',
+                        '[class*="answer"]', '[class*="choice"]', '[class*="option"]'
+                    ];
                     for (const sel of sels) {
                         for (const el of document.querySelectorAll(sel)) {
-                            if (norm(el.textContent).includes(target)) {
+                            const t = norm(el.textContent);
+                            if (t.includes(target) || t.includes(stripped)) {
                                 el.click();
-                                return true;
+                                // Also fire events on any child input
+                                const inp = el.querySelector('input[type="radio"], input[type="checkbox"]');
+                                if (inp) {
+                                    inp.checked = true;
+                                    inp.dispatchEvent(new Event('change', { bubbles: true }));
+                                    inp.dispatchEvent(new Event('input', { bubbles: true }));
+                                }
+                                return { clicked: true, sel: sel, tag: el.tagName };
                             }
                         }
                     }
-                    return false;
+                    return { clicked: false, reason: 'no text match' };
                 }""",
                 option_text,
             )
-            if clicked:
+            if isinstance(result, dict):
+                self._dbg(f"text-search result: {result}")
+                if result.get("clicked"):
+                    return
+            elif result:
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            self._dbg(f"text-search error: {e}", style="yellow")
 
         console.print(
             f"[yellow]Warning: could not find option '{option_text[:60]}' to click[/yellow]"
@@ -255,6 +467,7 @@ class QuizLoop:
             try:
                 await el.wait_for(state="visible", timeout=1_500)
                 await el.fill(value)
+                self._dbg(f"filled '{selector}' with '{value[:40]}'")
                 return
             except Exception:
                 continue
@@ -266,16 +479,48 @@ class QuizLoop:
 
         try:
             state = await frame.evaluate("""() => {
-                const rc = document.querySelectorAll('input[type="radio"]:checked').length;
-                const cc = document.querySelectorAll('input[type="checkbox"]:checked').length;
+                const isQuizInput = el => !el.name.startsWith('ot-group-id') && el.type !== 'hidden';
+                const rc = [...document.querySelectorAll('input[type="radio"]:checked')]
+                            .filter(isQuizInput).length;
+                const cc = [...document.querySelectorAll('input[type="checkbox"]:checked')]
+                            .filter(isQuizInput).length;
                 const tf = [...document.querySelectorAll('input[type="text"], textarea')]
                             .filter(el => el.value.trim()).length;
-                return { rc, cc, tf };
+                // Also detect framework-managed selections (Pearson, etc.)
+                const ariaChecked = document.querySelectorAll(
+                    '[role="radio"][aria-checked="true"], [role="checkbox"][aria-checked="true"]'
+                ).length;
+                const cssSelected = document.querySelectorAll(
+                    '.selected, .active, .checked, ' +
+                    '[class*="selected"], [class*="Selected"]'
+                ).length;
+                // Gather all radio/checkbox details for debug
+                const allInputs = [...document.querySelectorAll('input[type="radio"], input[type="checkbox"]')]
+                    .map((el, i) => ({
+                        i, type: el.type, checked: el.checked, id: el.id || '',
+                        name: el.name || '', visible: el.offsetParent !== null
+                    }));
+                return { rc, cc, tf, ariaChecked, cssSelected, allInputs };
             }""")
         except Exception:
-            state = {"rc": 0, "cc": 0, "tf": 0}
+            state = {"rc": 0, "cc": 0, "tf": 0, "ariaChecked": 0, "cssSelected": 0, "allInputs": []}
 
-        has_selection = state["rc"] > 0 or state["cc"] > 0 or state["tf"] > 0
+        if self.debug:
+            inputs_info = state.get("allInputs", [])
+            detail_lines = [f"  [{i['i']}] {i['type']} checked={i['checked']} visible={i['visible']} name={i['name']}" for i in inputs_info[:10]]
+            self._dbg_panel("Verify DOM state", (
+                f"radio:checked   = {state['rc']}\n"
+                f"checkbox:checked = {state['cc']}\n"
+                f"text filled     = {state['tf']}\n"
+                f"aria-checked    = {state.get('ariaChecked', 0)}\n"
+                f"css selected    = {state.get('cssSelected', 0)}\n"
+                f"inputs ({len(inputs_info)}):\n" + "\n".join(detail_lines)
+            ), border="yellow")
+
+        has_selection = (
+            state["rc"] > 0 or state["cc"] > 0 or state["tf"] > 0
+            or state.get("ariaChecked", 0) > 0 or state.get("cssSelected", 0) > 0
+        )
 
         issues: list[str] = []
         if not has_selection:
@@ -283,15 +528,17 @@ class QuizLoop:
 
         next_action = await self._detect_next_action()
 
-        return VerifyResult(
+        result = VerifyResult(
             all_correct=has_selection,
             issues=issues,
             next_action=next_action,
         )
+        self._dbg(f"verify result: correct={result.all_correct} next={result.next_action} issues={result.issues}")
+        return result
 
     async def _detect_next_action(self) -> str:
         """Scan all frames for Check/Next/Done buttons (disabled buttons excluded)."""
-        check_kw = ["check answer", "check my answer", "submit answer"]
+        check_kw = ["check answer", "check my answer", "submit answer", "try again"]
         next_kw = ["next question", "next", "continue"]
 
         for frame in self.page.frames:
@@ -306,10 +553,13 @@ class QuizLoop:
                         return {
                             check: texts.some(t => cfg.c.some(n => t.includes(n))),
                             next:  texts.some(t => cfg.n.some(n => t.includes(n))),
+                            buttons: texts.slice(0, 15),
                         };
                     }""",
                     {"c": check_kw, "n": next_kw},
                 )
+                if found.get("buttons"):
+                    self._dbg(f"buttons in {frame.url[:40]}: {found['buttons'][:8]}")
                 if found["check"]:
                     return "check"
                 if found["next"]:
@@ -317,13 +567,16 @@ class QuizLoop:
             except Exception:
                 pass
 
+        self._dbg("no check/next button found — defaulting to 'check'", style="yellow")
         return "check"  # Default: assume check button exists (safe fallback)
 
     async def _click_button_all_frames(self, candidates: list[str]) -> bool:
-        """Try to click a button matching any candidate text, searching all frames."""
-        pattern = re.compile(
-            '|'.join(re.escape(n) for n in candidates), re.IGNORECASE
-        )
+        """Try to click a button matching any candidate text, searching all frames.
+
+        Uses exact text matching (normalized whitespace, case-insensitive) to
+        avoid false positives like "checkpoint" matching "Check".
+        """
+        self._dbg(f"searching for button: {candidates}")
 
         active_frame = await self._active_frame()
         frames = [active_frame]
@@ -332,29 +585,21 @@ class QuizLoop:
                 frames.append(frame)
 
         for frame in frames:
-            btn = frame.get_by_role("button", name=pattern)
-            try:
-                if await btn.count() > 0:
-                    await btn.first.click()
-                    try:
-                        await self.page.wait_for_load_state("networkidle", timeout=5_000)
-                    except Exception:
-                        pass
-                    return True
-            except Exception:
-                pass
-
+            # JS search with exact-match: button text must equal a candidate
+            # (not just contain it) to avoid "checkpoint" matching "Check Answer"
             try:
                 clicked = await frame.evaluate(
                     """(names) => {
                         const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
+                        const targets = names.map(n => norm(n));
                         for (const el of document.querySelectorAll(
                             'button, [role="button"], input[type="submit"]'
                         )) {
                             const t = norm(el.textContent || el.value || '');
-                            if (names.some(n => t.includes(n.toLowerCase()))) {
+                            // Exact match or button text starts with a candidate
+                            if (targets.some(n => t === n || t.startsWith(n))) {
                                 el.click();
-                                return true;
+                                return t;
                             }
                         }
                         return false;
@@ -362,6 +607,7 @@ class QuizLoop:
                     candidates,
                 )
                 if clicked:
+                    self._dbg(f"clicked button '{clicked}' in {frame.url[:50]}")
                     try:
                         await self.page.wait_for_load_state("networkidle", timeout=5_000)
                     except Exception:
@@ -370,13 +616,19 @@ class QuizLoop:
             except Exception:
                 pass
 
+        self._dbg("button not found in any frame", style="yellow")
         return False
 
     async def _advance_sidebar(self) -> None:
-        """Click the next question in a sidebar question list (Pearson, etc.)."""
-        frame = await self._active_frame()
-        try:
-            advanced = await frame.evaluate("""() => {
+        """Click the next question in a sidebar question list (Pearson, etc.).
+
+        Searches ALL frames since the sidebar is often in a different frame
+        than the quiz content (e.g. assignment frame vs Player frame).
+        """
+        advanced = False
+        for frame in self.page.frames:
+            try:
+                advanced = await frame.evaluate("""() => {
                 // Find list containers that look like question lists (items contain "X/Y pt")
                 for (const container of document.querySelectorAll(
                     'ol, ul, [role="list"], [role="tablist"], nav'
@@ -416,20 +668,71 @@ class QuizLoop:
                 }
                 return false;
             }""")
-            if advanced:
-                try:
-                    await self.page.wait_for_load_state("networkidle", timeout=5_000)
-                except Exception:
-                    await asyncio.sleep(1)
-        except Exception:
-            pass
+                if advanced:
+                    self._dbg(f"sidebar: advanced to next question (frame: {frame.url[:50]})")
+                    try:
+                        await self.page.wait_for_load_state("networkidle", timeout=5_000)
+                    except Exception:
+                        await asyncio.sleep(1)
+                    return
+            except Exception:
+                continue
+        self._dbg("sidebar: no next question found in any frame")
+
+    async def _dismiss_dialogs(self) -> None:
+        """Dismiss any modal dialog (Pearson 'That's incorrect' / 'Correct' popups).
+
+        Searches all frames for OK/Close/Got it/Continue buttons inside dialogs.
+        """
+        for frame in self.page.frames:
+            try:
+                dismissed = await frame.evaluate("""() => {
+                    const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
+                    // Look for modal/dialog containers first
+                    const modals = document.querySelectorAll(
+                        '[role="dialog"], [role="alertdialog"], .modal, .dialog, ' +
+                        '[class*="modal"], [class*="dialog"], [class*="popup"], ' +
+                        '[class*="overlay"]'
+                    );
+                    // Also search the whole document (some popups aren't marked as dialogs)
+                    const candidates = ['ok', 'close', 'got it', 'continue', 'dismiss', 'x'];
+                    const allButtons = document.querySelectorAll(
+                        'button, [role="button"], input[type="button"]'
+                    );
+                    for (const btn of allButtons) {
+                        const t = norm(btn.textContent || btn.value || '');
+                        const aria = norm(btn.getAttribute('aria-label') || '');
+                        if (candidates.some(c => t === c || aria === c)) {
+                            btn.click();
+                            return t || aria;
+                        }
+                    }
+                    // Also try clicking X / close icon buttons (often just "×" or empty with aria-label)
+                    for (const btn of allButtons) {
+                        const t = (btn.textContent || '').trim();
+                        if (t === '×' || t === 'X' || t === '✕') {
+                            btn.click();
+                            return 'close-icon';
+                        }
+                    }
+                    return false;
+                }""")
+                if dismissed:
+                    self._dbg(f"dismissed dialog: '{dismissed}' in {frame.url[:50]}")
+                    await asyncio.sleep(0.5)
+                    return
+            except Exception:
+                continue
 
     async def _navigate(self, action: str) -> None:
+        self._dbg(f"navigate: action={action}")
         if action == "check":
-            candidates = ["Check answer", "Check Answer", "Check My Answer", "Check", "Submit Answer"]
+            candidates = ["Check answer", "Check Answer", "Check My Answer", "Submit Answer", "Try again", "Try Again"]
             clicked = await self._click_button_all_frames(candidates)
             if clicked:
                 await asyncio.sleep(1.5)  # Wait for Pearson feedback animation
+                await self._dismiss_dialogs()  # Handle "That's incorrect" / "Correct" popups
+                await self._save_screenshot("after-check")
                 await self._advance_sidebar()
             else:
                 console.print("[yellow]Warning: could not find 'check' button[/yellow]")

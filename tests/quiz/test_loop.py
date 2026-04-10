@@ -167,18 +167,14 @@ async def test_navigate_next_clicks_button():
     page, main_frame, player_frame = _make_page_with_frame(player_input_count=4)
     loop = QuizLoop(page, MagicMock())
 
-    btn = MagicMock()
-    btn.count = AsyncMock(return_value=1)
-    btn.first = MagicMock()
-    btn.first.click = AsyncMock()
-
-    # _click_button_all_frames calls _active_frame then searches frames
+    # _click_button_all_frames uses JS evaluate to find and click buttons
     loop._active_frame = AsyncMock(return_value=player_frame)
-    player_frame.get_by_role = MagicMock(return_value=btn)
+    # JS button search returns matched button text on success
+    player_frame.evaluate = AsyncMock(return_value="next")
 
     await loop._navigate("next")
 
-    btn.first.click.assert_awaited_once()
+    player_frame.evaluate.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -285,12 +281,16 @@ async def test_page_text_uses_active_frame_when_long():
 
 
 @pytest.mark.asyncio
-async def test_page_text_falls_back_to_main_when_sparse():
+async def test_page_text_falls_back_to_richest_frame():
+    """When the active frame has sparse text, _page_text scans all frames
+    and returns the one with the most content."""
     page, main_frame, player_frame = _make_page_with_frame(
         player_input_count=4,
         player_body="nav",  # < 200 chars
     )
-    page.inner_text = AsyncMock(return_value="full page content " * 20)
+    # main_frame has short text, but a third "content" frame has long text
+    content_frame = _make_frame(input_count=0, body_text="full page content " * 20)
+    page.frames = [main_frame, player_frame, content_frame]
     loop = QuizLoop(page, MagicMock())
     result = await loop._page_text()
     assert result == "full page content " * 20
@@ -314,3 +314,46 @@ async def test_fill_text_uses_active_frame():
 
     player_frame.locator.assert_called()
     textarea.fill.assert_awaited_once_with("my answer")
+
+
+@pytest.mark.asyncio
+async def test_collect_buttons_deduplicates():
+    """Same button text appearing in two frames should only appear once."""
+    frame1 = MagicMock()
+    frame1.evaluate = AsyncMock(return_value=["Next", "Check Answer"])
+    frame1.url = "https://frame1.example.com"
+
+    frame2 = MagicMock()
+    frame2.evaluate = AsyncMock(return_value=["Next", "Submit"])  # "Next" is a dupe
+    frame2.url = "https://frame2.example.com"
+
+    page = AsyncMock()
+    page.frames = [frame1, frame2]
+
+    loop = QuizLoop(page, MagicMock())
+    result = await loop._collect_buttons()
+
+    assert result.count("Next") == 1
+    assert "Check Answer" in result
+    assert "Submit" in result
+    assert len(result) == 3
+
+
+@pytest.mark.asyncio
+async def test_collect_buttons_skips_failed_frames():
+    """A frame that raises during evaluate should be skipped silently."""
+    frame1 = MagicMock()
+    frame1.evaluate = AsyncMock(side_effect=Exception("frame detached"))
+    frame1.url = "https://frame1.example.com"
+
+    frame2 = MagicMock()
+    frame2.evaluate = AsyncMock(return_value=["Next"])
+    frame2.url = "https://frame2.example.com"
+
+    page = AsyncMock()
+    page.frames = [frame1, frame2]
+
+    loop = QuizLoop(page, MagicMock())
+    result = await loop._collect_buttons()
+
+    assert result == ["Next"]
