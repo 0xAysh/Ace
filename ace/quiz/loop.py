@@ -595,7 +595,7 @@ class QuizLoop:
                     '[role="radio"][aria-checked="true"], [role="checkbox"][aria-checked="true"]'
                 ).length;
                 const cssSelected = document.querySelectorAll(
-                    '.selected, .active, .checked, ' +
+                    '.selected, .checked, ' +
                     '[class*="selected"], [class*="Selected"]'
                 ).length;
                 // Gather all radio/checkbox details for debug
