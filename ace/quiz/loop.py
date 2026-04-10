@@ -79,7 +79,7 @@ class QuizLoop:
             return None
 
     async def run(self) -> None:
-        """Main loop. Runs until verify returns next_action='done'."""
+        """Main loop: scout → answer → select → verify → navigate_smart. Repeats until scout returns no questions."""
         MAX_PAGES = 100  # safety cap
 
         if self.debug:
