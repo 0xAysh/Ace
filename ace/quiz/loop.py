@@ -268,6 +268,41 @@ class QuizLoop:
                 continue
         return results
 
+    async def _click_by_text(self, target: str) -> bool:
+        """Click the first button whose text exactly matches target (case-insensitive).
+
+        Searches all frames. Returns True on first match, False if not found anywhere.
+        """
+        for frame in self.page.frames:
+            try:
+                clicked = await frame.evaluate(
+                    """(target) => {
+                    const norm = s => s.replace(/\\s+/g, ' ').trim().toLowerCase();
+                    const t = norm(target);
+                    for (const el of document.querySelectorAll(
+                        'button, [role="button"], input[type="submit"],'
+                        + ' input[type="button"], a[role="button"]'
+                    )) {
+                        const label = norm(
+                            el.textContent || el.value || el.getAttribute('aria-label') || ''
+                        );
+                        if (label === t) {
+                            el.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }""",
+                    target,
+                )
+                if clicked:
+                    self._dbg(f"clicked '{target}' in {frame.url[:60]}")
+                    return True
+            except Exception:
+                continue
+        self._dbg(f"_click_by_text: '{target}' not found in any frame", style="yellow")
+        return False
+
     def _parse_option_letter(self, option_text: str) -> str | None:
         """Extract uppercase letter from 'A. foo' → 'A', or None for 'True'."""
         m = re.match(r'^([A-Za-z])\.\s', option_text)

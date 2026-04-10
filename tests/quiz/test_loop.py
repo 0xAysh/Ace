@@ -357,3 +357,58 @@ async def test_collect_buttons_skips_failed_frames():
     result = await loop._collect_buttons()
 
     assert result == ["Next"]
+
+
+@pytest.mark.asyncio
+async def test_click_by_text_returns_true_on_match():
+    """Returns True when a frame's JS click finds the button."""
+    frame = MagicMock()
+    frame.evaluate = AsyncMock(return_value=True)
+    frame.url = "https://example.com"
+
+    page = AsyncMock()
+    page.frames = [frame]
+
+    loop = QuizLoop(page, MagicMock())
+    result = await loop._click_by_text("Check Answer")
+
+    assert result is True
+    frame.evaluate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_click_by_text_returns_false_when_not_found():
+    """Returns False when no frame contains the button."""
+    frame = MagicMock()
+    frame.evaluate = AsyncMock(return_value=False)
+    frame.url = "https://example.com"
+
+    page = AsyncMock()
+    page.frames = [frame]
+
+    loop = QuizLoop(page, MagicMock())
+    result = await loop._click_by_text("Nonexistent Button")
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_click_by_text_tries_all_frames():
+    """Tries subsequent frames if the first returns False."""
+    frame1 = MagicMock()
+    frame1.evaluate = AsyncMock(return_value=False)
+    frame1.url = "https://frame1.example.com"
+
+    frame2 = MagicMock()
+    frame2.evaluate = AsyncMock(return_value=True)
+    frame2.url = "https://frame2.example.com"
+
+    page = AsyncMock()
+    page.frames = [frame1, frame2]
+
+    loop = QuizLoop(page, MagicMock())
+    result = await loop._click_by_text("Next")
+
+    assert result is True
+    frame1.evaluate.assert_awaited_once()
+    frame2.evaluate.assert_awaited_once()
